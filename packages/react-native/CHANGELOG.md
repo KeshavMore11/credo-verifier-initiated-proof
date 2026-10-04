@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.8.0
+
+### Minor Changes
+
+- b326d2b: Drop support for Node.js 20, which reached end-of-life. The minimum supported Node.js version is now 22.
+
+### Patch Changes
+
+- b326d2b: feat: support node 26
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+  - @credo-ts/core@0.8.0
+
 ## 0.7.1
 
 ### Patch Changes

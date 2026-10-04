@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.8.0
+
+### Minor Changes
+
+- b326d2b: Expose the canonical AnonCreds W3C proof APIs from `@credo-ts/anoncreds`, as established by the v0.7.x API migration. Remove the deprecated AnonCreds DIDComm formats and protocols from the package root and expose them through `@credo-ts/anoncreds/didcomm`, while keeping DIDComm as a required AnonCreds dependency. Make AnonCreds an optional peer dependency of Cheqd and WebVH and expose their registries only through their `/anoncreds` subpaths. Consumers using those registries must install `@credo-ts/anoncreds` explicitly.
+- b326d2b: Drop support for Node.js 20, which reached end-of-life. The minimum supported Node.js version is now 22.
+
+### Patch Changes
+
+- b326d2b: Pin CosmJS dependencies to the versions supported by `@cheqd/sdk-esm`.
+- b326d2b: Consolidate Ed25519 linked data proof suite contexts to use the bundled JSON-LD context registry and shared VC context URL constants. This removes duplicate suite-local Ed25519 context documents/constants, flattens the Ed25519 signature suite files into the main signature suites folder, and fixes bundled context document loading for URLs with fragments.
+- b326d2b: feat: support node 26
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+  - @credo-ts/anoncreds@0.8.0
+  - @credo-ts/core@0.8.0
+
 ## 0.7.1
 
 ### Patch Changes

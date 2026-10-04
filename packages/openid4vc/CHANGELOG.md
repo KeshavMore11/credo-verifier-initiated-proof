@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.0
+
+### Minor Changes
+
+- b326d2b: Drop support for Node.js 20, which reached end-of-life. The minimum supported Node.js version is now 22.
+
+### Patch Changes
+
+- b326d2b: Add `supportedJwaSignatureAlgorithms` to the `KeyManagementApi`, which excludes symmetric (HMAC) algorithms unless `includeSymmetricAlgorithms` is set. OpenID4VC and DIDComm now use it, so symmetric algorithms are no longer advertised in metadata such as `vp_formats_supported`, `proof_signing_alg_values_supported` and `algsSupported`.
+- b326d2b: The credential endpoint now responds with `unknown_credential_identifier` (OpenID4VCI 1.0 §8.3.1) instead of `invalid_credential_request` when a credential request contains a `credential_identifier`, since Credo never grants credential identifiers.
+- b326d2b: feat: support node 26
+- b326d2b: fix(openid4vc): when resolving an OpenID4VP authorization request with a DCQL query, the holder now rejects transaction data entries that reference credential ids not present in the DCQL query with an `invalid_transaction_data` error, instead of throwing a `TypeError`.
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+  - @credo-ts/core@0.8.0
+
 ## 0.7.1
 
 ### Patch Changes

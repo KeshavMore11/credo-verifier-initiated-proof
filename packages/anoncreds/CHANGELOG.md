@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.8.0
+
+### Minor Changes
+
+- b326d2b: Remove deprecated AnonCreds Data Integrity compatibility aliases. Use the canonical AnonCreds W3C credential APIs and `DidCommDataIntegrityCredentialFormatService` from `@credo-ts/didcomm` instead.
+- b326d2b: Expose the canonical AnonCreds W3C proof APIs from `@credo-ts/anoncreds`, as established by the v0.7.x API migration. Remove the deprecated AnonCreds DIDComm formats and protocols from the package root and expose them through `@credo-ts/anoncreds/didcomm`, while keeping DIDComm as a required AnonCreds dependency. Make AnonCreds an optional peer dependency of Cheqd and WebVH and expose their registries only through their `/anoncreds` subpaths. Consumers using those registries must install `@credo-ts/anoncreds` explicitly.
+- b326d2b: Drop support for Node.js 20, which reached end-of-life. The minimum supported Node.js version is now 22.
+
+### Patch Changes
+
+- b326d2b: The `anoncreds` option of the `AnonCredsModule` now also accepts the `NativeAnoncreds` class exported by `@hyperledger/anoncreds-shared` (and the platform packages) in addition to an `Anoncreds` instance. When `NativeAnoncreds` is passed the registered native binding is resolved on each access, so it no longer matters whether the platform package (`anoncreds-nodejs` / `anoncreds-react-native`) was imported before Credo. The `AnonCredsRsHolderService` also no longer uses the deprecated global `anoncreds` export, and uses the instance configured on the module instead.
+  
+  Passing the (deprecated) `anoncreds` export keeps working.
+  
+  ```ts
+  import { NativeAnoncreds } from '@hyperledger/anoncreds-nodejs'
+  
+  new AnonCredsModule({
+    anoncreds: NativeAnoncreds,
+    registries: [/* ... */],
+  })
+  ```
+- b326d2b: feat: support node 26
+- b326d2b: fix: store the proposal and offer messages in the Issue Credential V1 protocol before emitting the state changed event, so event handlers can find them.
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+  - @credo-ts/didcomm@0.8.0
+  - @credo-ts/core@0.8.0
+
 ## 0.7.1
 
 ### Patch Changes

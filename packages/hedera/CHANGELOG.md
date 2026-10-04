@@ -1,5 +1,30 @@
 # @credo-ts/hedera
 
+## 0.8.0
+
+### Minor Changes
+
+- b326d2b: Drop support for Node.js 20, which reached end-of-life. The minimum supported Node.js version is now 22.
+- b326d2b: Separate Hedera DID operations from the AnonCreds registry implementation by moving registry operations and issuer-key signing from `HederaLedgerService` into a dedicated `HederaAnonCredsService`. The AnonCreds methods formerly on `HederaLedgerService` are removed. Expose `HederaAnonCredsRegistry` only through the `@credo-ts/hedera/anoncreds` subpath and make `@credo-ts/anoncreds` and `@hiero-did-sdk/anoncreds` optional peer dependencies. Consumers using the Hedera AnonCreds registry must install both packages explicitly and register `HederaModule`; DID-only consumers no longer need AnonCreds installed.
+
+### Patch Changes
+
+- b326d2b: feat: support node 26
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+  - @credo-ts/anoncreds@0.8.0
+  - @credo-ts/core@0.8.0
+
 ## 0.7.1
 
 ### Patch Changes

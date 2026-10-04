@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.8.0
+
+### Minor Changes
+
+- b326d2b: Drop support for Node.js 20, which reached end-of-life. The minimum supported Node.js version is now 22.
+
+### Patch Changes
+
+- b326d2b: The `askar` option of the `AskarModule` now also accepts the `NativeAskar` class (available since `@openwallet-foundation/askar-shared` 0.6.0) in addition to an `Askar` instance. When `NativeAskar` is passed the registered native binding is resolved on each access, so it no longer matters whether the platform package (`askar-nodejs` / `askar-react-native`) was imported before Credo. This fixes errors like `Cannot read properties of undefined (reading 'keyGetJwkSecret')` in ESM, bundler and test-runner setups that load modules in a different order. See #2597, #2607.
+  
+  Passing the (deprecated) `askar` export keeps working, and askar-shared `^0.4.3 || ^0.5.0 || ^0.6.0` remains supported.
+  
+  ```ts
+  import { NativeAskar } from '@openwallet-foundation/askar-nodejs'
+  
+  new AskarModule({
+    askar: NativeAskar,
+    store: { id: 'my-wallet', key: 'my-key' },
+  })
+  ```
+- b326d2b: feat: support node 26
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+- Updated dependencies [b326d2b]
+  - @credo-ts/core@0.8.0
+
 ## 0.7.1
 
 ### Patch Changes
