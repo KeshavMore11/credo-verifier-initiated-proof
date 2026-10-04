@@ -1,0 +1,901 @@
+import type { NonEmptyArray } from '@animo-id/pex'
+import type { DisclosureFrame, PresentationFrame, SDJwt, Verifier } from '@sd-jwt/core'
+import { type SDJWTVCConfig, SDJwtVcInstance, type VCTFetcher } from '@sd-jwt/sd-jwt-vc'
+import { AgentContext } from '../../agent'
+import { TrustedIssuerContext } from '../../agent/TrustedIssuerContext'
+import type { TrustedIssuer } from '../../agent/TrustedIssuersForVerification'
+import { JwtPayload } from '../../crypto'
+import { CredoError } from '../../error'
+import { injectable } from '../../plugins'
+import type { Query, QueryOptions } from '../../storage/StorageService'
+import type { JsonObject } from '../../types'
+import { dateToSeconds, IntegrityVerifier, JsonEncoder, nowInSeconds, TypedArrayEncoder } from '../../utils'
+import { getDomainFromUrl } from '../../utils/domain'
+import { fetchWithTimeout } from '../../utils/fetch'
+import { getPublicJwkFromVerificationMethod, parseDid } from '../dids'
+import { KeyManagementApi, PublicJwk } from '../kms'
+import { ClaimFormat } from '../vc/index'
+import { X509Certificate, X509ModuleConfig, X509Service } from '../x509'
+import { legacyTrustedCertificatesToTrustedIssuers } from '../x509/utils/convertLegacyTrustedCertificates'
+import { decodeSdJwtVc, sdJwtVcHasher } from './decodeSdJwtVc'
+import { applyDisclosuresForPaths, applyDisclosuresForPayload, type ClaimPath } from './disclosureFrame'
+import { SdJwtVcRecord, SdJwtVcRepository } from './repository'
+import { SdJwtVcError } from './SdJwtVcError'
+import { SdJwtVcModuleConfig } from './SdJwtVcModuleConfig'
+import type {
+  SdJwtVcHeader,
+  SdJwtVcHolderBinding,
+  SdJwtVcIssuer,
+  SdJwtVcPayload,
+  SdJwtVcPresentOptions,
+  SdJwtVcSignOptions,
+  SdJwtVcStoreOptions,
+  SdJwtVcVerifyOptions,
+} from './SdJwtVcOptions'
+import type { SdJwtVcTypeMetadata } from './typeMetadata'
+import {
+  extractKeyFromHolderBinding,
+  getSdJwtHashingAlgorithm,
+  getSdJwtSigner,
+  getSdJwtVerifier,
+  parseHolderBindingFromCredential,
+  parseIssuerFromCredential,
+  resolveDidUrl,
+  resolveSigningPublicJwkFromDidUrl,
+  setJwkAlgFromJwtHeader,
+} from './utils'
+
+export interface SdJwtVc<
+  Header extends SdJwtVcHeader = SdJwtVcHeader,
+  Payload extends SdJwtVcPayload = SdJwtVcPayload,
+> {
+  /**
+   * claim format is convenience method added to all credential instances
+   */
+  claimFormat: ClaimFormat.SdJwtDc
+  /**
+   * encoded is convenience method added to all credential instances
+   */
+  encoded: string
+  compact: string
+  header: Header
+
+  /**
+   * The issuer of the credential
+   */
+  issuer: SdJwtVcIssuer
+
+  /**
+   * The holder of the credential
+   */
+  holder?: SdJwtVcHolderBinding
+
+  // TODO: payload type here is a lie, as it is the signed payload (so fields replaced with _sd)
+  payload: Payload
+  prettyClaims: Payload
+
+  kbJwt?: {
+    header: Record<string, unknown>
+    payload: Record<string, unknown>
+  }
+
+  /**
+   * The key id in the KMS bound to this SD-JWT VC, used for presentations.
+   *
+   * This will only be set on the holder side if defined on the SdJwtVcRecord
+   */
+  kmsKeyId?: string
+
+  /**
+   * The merged/resolved type metadata of the SD-JWT VC.
+   */
+  typeMetadata?: SdJwtVcTypeMetadata
+}
+
+export interface VerificationResult {
+  isValid: boolean
+  isValidJwtPayload?: boolean
+  isSignatureValid?: boolean
+  isStatusValid?: boolean
+  isNotBeforeValid?: boolean
+  isExpiryTimeValid?: boolean
+  areRequiredClaimsIncluded?: boolean
+  isKeyBindingValid?: boolean
+  containsExpectedKeyBinding?: boolean
+  containsRequiredVcProperties?: boolean
+}
+
+/**
+ * @internal
+ */
+@injectable()
+export class SdJwtVcService {
+  public constructor(private sdJwtVcRepository: SdJwtVcRepository) {}
+
+  public async sign<Payload extends SdJwtVcPayload>(
+    agentContext: AgentContext,
+    options: SdJwtVcSignOptions<Payload>
+  ): Promise<SdJwtVc> {
+    const { payload, disclosureFrame, hashingAlgorithm } = options
+
+    const issuer = await this.extractKeyFromIssuer(agentContext, options.issuer, true)
+
+    // holer binding is optional
+    const holderBinding = options.holder ? await extractKeyFromHolderBinding(agentContext, options.holder) : undefined
+
+    const header = {
+      alg: issuer.alg,
+      typ: options.headerType ?? 'dc+sd-jwt',
+      kid: issuer.kid,
+      x5c: issuer.x5c?.map((cert) => cert.toString('base64')),
+    } as const
+
+    issuer.publicJwk.alg = issuer.alg
+
+    const sdJwt = new SDJwtVcInstance({
+      ...this.getBaseSdJwtConfig(agentContext),
+      signer: getSdJwtSigner(agentContext, issuer.publicJwk),
+      hashAlg: getSdJwtHashingAlgorithm(hashingAlgorithm),
+      signAlg: issuer.alg,
+    })
+
+    if (!payload.vct || typeof payload.vct !== 'string') {
+      throw new SdJwtVcError("Missing required parameter 'vct'")
+    }
+
+    const { iat: payloadIat, ...payloadWithoutIat } = payload
+    const compact = await sdJwt.issue(
+      {
+        ...payloadWithoutIat,
+        cnf: holderBinding?.cnf,
+        iss: issuer.iss,
+        ...(payloadIat === null ? {} : { iat: payloadIat ?? nowInSeconds() }),
+        vct: payload.vct,
+      } as unknown as Payload,
+      disclosureFrame as DisclosureFrame<Payload>,
+      { header }
+    )
+
+    const prettyClaims = (await sdJwt.getClaims(compact)) as Payload
+    const decoded = await sdJwt.decode(compact)
+    const sdJwtPayload = decoded.jwt?.payload as Payload | undefined
+    if (!sdJwtPayload) {
+      throw new SdJwtVcError('Invalid sd-jwt-vc state.')
+    }
+
+    return {
+      compact,
+      prettyClaims,
+      header: header,
+      issuer: options.issuer,
+      holder: options.holder,
+      payload: sdJwtPayload,
+      claimFormat: ClaimFormat.SdJwtDc,
+      encoded: compact,
+    } satisfies SdJwtVc<typeof header, Payload>
+  }
+
+  public fromCompact<Header extends SdJwtVcHeader = SdJwtVcHeader, Payload extends SdJwtVcPayload = SdJwtVcPayload>(
+    compactSdJwtVc: string,
+    typeMetadata?: SdJwtVcTypeMetadata
+  ): SdJwtVc<Header, Payload> {
+    return decodeSdJwtVc(compactSdJwtVc, typeMetadata)
+  }
+
+  /**
+   * @deprecated use `applyDisclosuresForPaths` instead
+   */
+  public applyDisclosuresForPayload(compactSdJwtVc: string, requestedPayload: JsonObject): SdJwtVc {
+    const sdJwt = applyDisclosuresForPayload(compactSdJwtVc, requestedPayload)
+    const disclosedDecoded = decodeSdJwtVc(sdJwt)
+    return disclosedDecoded
+  }
+
+  public applyDisclosuresForPaths(compactSdJwtVc: string, disclosedPaths: ClaimPath[]): SdJwtVc {
+    const { compact } = applyDisclosuresForPaths(compactSdJwtVc, disclosedPaths)
+    const disclosedDecoded = decodeSdJwtVc(compact)
+    return disclosedDecoded
+  }
+
+  public async present<Payload extends SdJwtVcPayload = SdJwtVcPayload>(
+    agentContext: AgentContext,
+    { sdJwtVc, presentationFrame, verifierMetadata, additionalPayload }: SdJwtVcPresentOptions<Payload>
+  ): Promise<string> {
+    const sdjwt = new SDJwtVcInstance(this.getBaseSdJwtConfig(agentContext))
+    const compactSdJwtVc = typeof sdJwtVc === 'string' ? sdJwtVc : sdJwtVc.compact
+    const sdJwtVcInstance = await sdjwt.decode(compactSdJwtVc)
+
+    const holderBinding = parseHolderBindingFromCredential(sdJwtVcInstance.jwt?.payload)
+    if (!holderBinding && verifierMetadata) {
+      throw new SdJwtVcError("Verifier metadata provided, but credential has no 'cnf' claim to create a KB-JWT from")
+    }
+
+    const holder = holderBinding
+      ? await extractKeyFromHolderBinding(agentContext, holderBinding, {
+          forSigning: true,
+          jwkKeyId: typeof sdJwtVc !== 'string' ? sdJwtVc.kmsKeyId : undefined,
+        })
+      : undefined
+    if (holder) {
+      holder.publicJwk.alg = holder.alg
+    }
+    sdjwt.config({
+      kbSigner: holder ? getSdJwtSigner(agentContext, holder.publicJwk) : undefined,
+      kbSignAlg: holder?.alg,
+    })
+
+    const compactDerivedSdJwtVc = await sdjwt.present(compactSdJwtVc, presentationFrame as PresentationFrame<Payload>, {
+      kb: verifierMetadata
+        ? {
+            payload: {
+              iat: verifierMetadata.issuedAt,
+              nonce: verifierMetadata.nonce,
+              aud: verifierMetadata.audience,
+              ...additionalPayload,
+            },
+          }
+        : undefined,
+    })
+
+    return compactDerivedSdJwtVc
+  }
+
+  private assertValidX5cJwtIssuer(
+    agentContext: AgentContext,
+    iss: string | undefined,
+    leafCertificate: X509Certificate
+  ) {
+    // No 'iss' is allowed for X509
+    if (!iss) return
+
+    // If iss is present it MUST be an HTTPS url
+    if (!iss.startsWith('https://') && !(iss.startsWith('http://') && agentContext.config.allowInsecureHttpUrls)) {
+      throw new SdJwtVcError('The X509 certificate issuer must be a HTTPS URI.')
+    }
+
+    if (!leafCertificate.sanUriNames?.includes(iss) && !leafCertificate.sanDnsNames?.includes(getDomainFromUrl(iss))) {
+      throw new SdJwtVcError(
+        `The 'iss' claim in the payload does not match a 'SAN-URI' name and the domain extracted from the HTTPS URI does not match a 'SAN-DNS' name in the x5c certificate. Either remove the 'iss' claim or make it match with at least one SAN-URI or DNS-URI entry`
+      )
+    }
+  }
+
+  public async verify<Header extends SdJwtVcHeader = SdJwtVcHeader, Payload extends SdJwtVcPayload = SdJwtVcPayload>(
+    agentContext: AgentContext,
+    {
+      compactSdJwtVc,
+      keyBinding,
+      requiredClaimKeys,
+      fetchTypeMetadata,
+      trustedCertificates,
+      trustedIssuers: _trustedIssuers,
+      disableStatusValidation,
+      verifyCredentialStatus,
+      now,
+    }: SdJwtVcVerifyOptions
+  ): Promise<
+    | {
+        isValid: true
+        sdJwtVc: SdJwtVc<Header, Payload>
+        /**
+         * The full type metadata chain, can be used for further processing the type metadata.
+         *
+         * Only populated if `fetchTypeMetadata` is set to true, and the resolver returned a type
+         * metadata document.
+         */
+        typeMetadataChain?: NonEmptyArray<SdJwtVcTypeMetadata>
+      }
+    | { isValid: false; sdJwtVc?: SdJwtVc<Header, Payload>; error: Error }
+  > {
+    const sdjwt = new SDJwtVcInstance({
+      ...this.getBaseSdJwtConfig(agentContext),
+      // We manually fetch later
+      loadTypeMetadataFormat: false,
+    })
+    let sdJwtVc: SDJwt<Header, Payload>
+    let holderBinding: SdJwtVcHolderBinding | undefined
+    let issuer: SdJwtVcIssuer
+
+    let trustedIssuers = _trustedIssuers
+    if (trustedCertificates) {
+      trustedIssuers = [...(trustedIssuers ?? []), ...legacyTrustedCertificatesToTrustedIssuers(trustedCertificates)]
+    }
+
+    try {
+      sdJwtVc = (await sdjwt.decode(compactSdJwtVc)) as SDJwt<Header, Payload>
+      if (!sdJwtVc.jwt) throw new CredoError('Invalid sd-jwt-vc')
+      holderBinding = parseHolderBindingFromCredential(sdJwtVc.jwt.payload) ?? undefined
+      issuer = parseIssuerFromCredential(sdJwtVc.jwt.header, sdJwtVc.jwt.payload)
+    } catch (error) {
+      return {
+        isValid: false,
+        error,
+      }
+    }
+
+    const returnSdJwtVc: SdJwtVc<Header, Payload> = {
+      payload: sdJwtVc.jwt.payload as Payload,
+      header: sdJwtVc.jwt.header as Header,
+      compact: compactSdJwtVc,
+      prettyClaims: await sdJwtVc.getClaims(sdJwtVcHasher),
+      holder: holderBinding,
+      issuer,
+      kbJwt: sdJwtVc.kbJwt
+        ? {
+            payload: sdJwtVc.kbJwt.payload as Record<string, unknown>,
+            header: sdJwtVc.kbJwt.header as Record<string, unknown>,
+          }
+        : undefined,
+      claimFormat: ClaimFormat.SdJwtDc,
+      encoded: compactSdJwtVc,
+    } satisfies SdJwtVc<Header, Payload>
+
+    let typeMetadataChain: NonEmptyArray<SdJwtVcTypeMetadata> | undefined
+    try {
+      const { trustedIssuer } = await this.verifyIssuer(agentContext, returnSdJwtVc, trustedIssuers)
+      const issuerWithKey = await this.extractKeyFromIssuer(agentContext, issuer)
+      const holder = returnSdJwtVc.holder
+        ? await extractKeyFromHolderBinding(agentContext, returnSdJwtVc.holder)
+        : undefined
+
+      const statusValidationDisabled = disableStatusValidation === true || verifyCredentialStatus === false
+
+      setJwkAlgFromJwtHeader(issuerWithKey.publicJwk, sdJwtVc.jwt.header?.alg)
+      if (holder && sdJwtVc.kbJwt) setJwkAlgFromJwtHeader(holder.publicJwk, sdJwtVc.kbJwt.header?.alg)
+
+      sdjwt.config({
+        verifier: getSdJwtVerifier(agentContext, issuerWithKey.publicJwk),
+        kbVerifier: holder ? getSdJwtVerifier(agentContext, holder.publicJwk) : undefined,
+        statusVerifier: this.getStatusVerifier(agentContext, {
+          matchedTrustedIssuer: trustedIssuer,
+          credentialIssuerKey: issuerWithKey.publicJwk,
+          credentialIssuerCertificateChain: issuer.method === 'x5c' ? issuer.x5c : undefined,
+        }),
+      })
+
+      try {
+        await sdjwt.verify(compactSdJwtVc, {
+          requiredClaimKeys: requiredClaimKeys ? [...requiredClaimKeys, 'vct'] : ['vct'],
+          keyBindingNonce: keyBinding?.nonce,
+          currentDate: dateToSeconds(now ?? new Date()),
+          skewSeconds: agentContext.config.validitySkewSeconds,
+          disableStatusVerification: statusValidationDisabled,
+        })
+      } catch (error) {
+        return {
+          error,
+          isValid: false,
+          sdJwtVc: returnSdJwtVc,
+        }
+      }
+
+      if (sdJwtVc.jwt.header?.typ !== 'vc+sd-jwt' && sdJwtVc.jwt.header?.typ !== 'dc+sd-jwt') {
+        return {
+          error: new SdJwtVcError(`SD-JWT VC header 'typ' must be 'dc+sd-jwt' or 'vc+sd-jwt'`),
+          isValid: false,
+          sdJwtVc: returnSdJwtVc,
+        }
+      }
+
+      try {
+        JwtPayload.fromJson(returnSdJwtVc.payload).validate({
+          now: dateToSeconds(now ?? new Date()),
+          skewSeconds: agentContext.config.validitySkewSeconds,
+        })
+      } catch (error) {
+        return {
+          error,
+          isValid: false,
+          sdJwtVc: returnSdJwtVc,
+        }
+      }
+
+      // If keyBinding is present, verify the key binding
+      try {
+        if (keyBinding) {
+          if (!sdJwtVc.kbJwt?.payload) {
+            throw new SdJwtVcError('Keybinding is required for verification of the sd-jwt-vc')
+          }
+
+          // Assert `aud` and `nonce` claims
+          if (sdJwtVc.kbJwt.payload.aud !== keyBinding.audience) {
+            throw new SdJwtVcError('The key binding JWT does not contain the expected audience')
+          }
+
+          if (sdJwtVc.kbJwt.payload.nonce !== keyBinding.nonce) {
+            throw new SdJwtVcError('The key binding JWT does not contain the expected nonce')
+          }
+        }
+      } catch (error) {
+        return {
+          error,
+          isValid: false,
+          sdJwtVc: returnSdJwtVc,
+        }
+      }
+
+      if (fetchTypeMetadata) {
+        // We allow vct without type metadata for now (and don't fail if the retrieval fails)
+        // Integrity check must pass though.
+        const resolvedTypeMetadata = await this.fetchTypeMetadata(agentContext, returnSdJwtVc, {
+          throwErrorOnFetchError: false,
+          throwErrorOnUnsupportedVctValue: false,
+        })
+
+        returnSdJwtVc.typeMetadata = resolvedTypeMetadata?.mergedTypeMetadata
+        typeMetadataChain = resolvedTypeMetadata?.typeMetadataChain
+      }
+    } catch (error) {
+      return {
+        isValid: false,
+        error,
+        sdJwtVc: returnSdJwtVc,
+      }
+    }
+
+    return {
+      isValid: true,
+      sdJwtVc: returnSdJwtVc,
+      typeMetadataChain,
+    }
+  }
+
+  /**
+   * Resolve the type metadata for an SD-JWT instance.
+   *
+   * This method resolves the `vct` value, and any `extends` values.
+   */
+  public async fetchTypeMetadata(
+    agentContext: AgentContext,
+    sdJwtVc: SdJwtVc,
+    {
+      throwErrorOnFetchError = true,
+      throwErrorOnUnsupportedVctValue = true,
+    }: { throwErrorOnFetchError?: boolean; throwErrorOnUnsupportedVctValue?: boolean } = {}
+  ) {
+    const sdjwt = new SDJwtVcInstance({
+      ...this.getBaseSdJwtConfig(agentContext),
+      vctFetcher: this.getVctFetcher(agentContext, {
+        baseVct: sdJwtVc.payload.vct,
+        throwErrorOnFetchError,
+        throwErrorOnUnsupportedVctValue,
+      }),
+    })
+
+    const typeMetadata = await sdjwt.getVct(sdJwtVc.compact)
+    return typeMetadata
+  }
+
+  public async store(agentContext: AgentContext, options: SdJwtVcStoreOptions) {
+    await this.sdJwtVcRepository.save(agentContext, options.record)
+    return options.record
+  }
+
+  public async getById(agentContext: AgentContext, id: string): Promise<SdJwtVcRecord> {
+    return await this.sdJwtVcRepository.getById(agentContext, id)
+  }
+
+  public async getAll(agentContext: AgentContext): Promise<Array<SdJwtVcRecord>> {
+    return await this.sdJwtVcRepository.getAll(agentContext)
+  }
+
+  public async findByQuery(
+    agentContext: AgentContext,
+    query: Query<SdJwtVcRecord>,
+    queryOptions?: QueryOptions
+  ): Promise<Array<SdJwtVcRecord>> {
+    return await this.sdJwtVcRepository.findByQuery(agentContext, query, queryOptions)
+  }
+
+  public async deleteById(agentContext: AgentContext, id: string) {
+    await this.sdJwtVcRepository.deleteById(agentContext, id)
+  }
+
+  public async update(agentContext: AgentContext, sdJwtVcRecord: SdJwtVcRecord) {
+    await this.sdJwtVcRepository.update(agentContext, sdJwtVcRecord)
+  }
+
+  private async extractKeyFromIssuer(agentContext: AgentContext, issuer: SdJwtVcIssuer, forSigning = false) {
+    if (issuer.method === 'did') {
+      const parsedDid = parseDid(issuer.didUrl)
+      if (!parsedDid.fragment) {
+        throw new SdJwtVcError(
+          `didUrl '${issuer.didUrl}' does not contain a '#'. Unable to derive key from did document`
+        )
+      }
+
+      let publicJwk: PublicJwk
+      if (forSigning) {
+        publicJwk = await resolveSigningPublicJwkFromDidUrl(agentContext, issuer.didUrl)
+      } else {
+        const { verificationMethod } = await resolveDidUrl(agentContext, issuer.didUrl)
+        publicJwk = getPublicJwkFromVerificationMethod(verificationMethod)
+      }
+
+      const supportedSignatureAlgorithms = publicJwk.supportedSignatureAlgorithms
+      if (supportedSignatureAlgorithms.length === 0) {
+        throw new SdJwtVcError(
+          `No supported JWA signature algorithms found for key ${publicJwk.jwkTypeHumanDescription}`
+        )
+      }
+      const alg = supportedSignatureAlgorithms[0]
+
+      return {
+        alg,
+        publicJwk,
+        iss: parsedDid.did,
+        kid: `#${parsedDid.fragment}`,
+      }
+    }
+
+    if (issuer.method === 'x5c') {
+      const leafCertificate = issuer.x5c[0]
+      if (!leafCertificate) {
+        throw new SdJwtVcError("Empty 'x5c' array provided")
+      }
+
+      if (forSigning && !leafCertificate.publicJwk.hasKeyId) {
+        throw new SdJwtVcError("Expected leaf certificate in 'x5c' array to have a key id configured.")
+      }
+
+      const publicJwk = leafCertificate.publicJwk
+      const supportedSignatureAlgorithms = publicJwk.supportedSignatureAlgorithms
+      if (supportedSignatureAlgorithms.length === 0) {
+        throw new SdJwtVcError(
+          `No supported JWA signature algorithms found for key ${publicJwk.jwkTypeHumanDescription}`
+        )
+      }
+      const alg = supportedSignatureAlgorithms[0]
+
+      this.assertValidX5cJwtIssuer(agentContext, issuer.issuer, leafCertificate)
+
+      return {
+        publicJwk,
+        iss: issuer.issuer,
+        x5c: issuer.x5c,
+        alg,
+      }
+    }
+
+    throw new SdJwtVcError("Unsupported credential issuer. Only 'did' and 'x5c' is supported at the moment.")
+  }
+
+  private async verifyIssuer<Header extends SdJwtVcHeader, Payload extends SdJwtVcPayload>(
+    agentContext: AgentContext,
+    sdJwtVc: SdJwtVc<Header, Payload>,
+    trustedIssuers?: TrustedIssuer[]
+  ) {
+    const x509Config = agentContext.dependencyManager.resolve(X509ModuleConfig)
+
+    const issuer = sdJwtVc.issuer
+    if (!issuer) {
+      throw new SdJwtVcError('Unsupported signing method for SD-JWT VC. Only did and x5c are supported at the moment.')
+    }
+
+    if (issuer.method === 'x5c') {
+      // NOTE: we can't use the 'simpler' call directly to `ensureTrustedSigner` due to having to incorporate the
+      // legacy X509 API. In the future we can simplify this.
+      let x509Issuers = trustedIssuers?.filter((t) => t.method === 'x509')
+
+      const context = {
+        verification: { type: 'credential', credential: sdJwtVc },
+        signer: {
+          certificateChain: issuer.x5c,
+          method: 'x509',
+        },
+      } as const
+
+      // `trustedIssuers` may already be populated by a caller that pre-resolved trust with a richer
+      // context (e.g. OpenID4VP passing the `oid4VpCredential` context). When it didn't (value is
+      // `undefined`), we resolve here with the plain `credential` context; the decision is the same.
+      if (!x509Issuers) {
+        x509Issuers = (await TrustedIssuerContext.getTrustedIssuersForVerification(agentContext, context))
+          ?.trustedIssuers
+      }
+
+      // Fall back to legacy x509-specific API
+      if (!x509Issuers) {
+        const legacyTrustedCertificates =
+          (await x509Config.getTrustedCertificatesForVerification?.(agentContext, {
+            certificateChain: issuer.x5c,
+            verification: {
+              type: 'credential',
+              credential: sdJwtVc,
+            },
+          })) ?? x509Config.trustedCertificates
+
+        if (legacyTrustedCertificates) {
+          x509Issuers = legacyTrustedCertificatesToTrustedIssuers(legacyTrustedCertificates)
+        }
+      }
+
+      if (!x509Issuers) {
+        throw new SdJwtVcError(
+          'No trusted certificates configured for X509 certificate chain validation. Issuer cannot be verified.'
+        )
+      }
+
+      return await TrustedIssuerContext.ensureTrustedSigner(agentContext, context, x509Issuers)
+    }
+
+    if (issuer.method === 'did') {
+      // `ensureTrustedSigner` consults the `getTrustedIssuersForVerification` callback and, to mimic
+      // the original behavior, allows the did by default when neither explicit trusted issuers nor the
+      // callback return any trusted issuers.
+      return await TrustedIssuerContext.ensureTrustedSigner(
+        agentContext,
+        {
+          verification: { type: 'credential', credential: sdJwtVc },
+          signer: {
+            didUrl: issuer.didUrl,
+            method: 'did',
+          },
+        },
+        trustedIssuers
+      )
+    }
+
+    throw new SdJwtVcError('Unsupported signing method for SD-JWT VC. Only did and x5c are supported at the moment.')
+  }
+
+  private getBaseSdJwtConfig(agentContext: AgentContext): SDJWTVCConfig {
+    const kms = agentContext.resolve(KeyManagementApi)
+
+    return {
+      hasher: sdJwtVcHasher,
+      statusListFetcher: this.getStatusListFetcher(agentContext),
+      saltGenerator: (length) => TypedArrayEncoder.toBase64Url(kms.randomBytes({ length })).slice(0, length),
+    }
+  }
+
+  private getStatusListFetcher(agentContext: AgentContext) {
+    return async (uri: string) => {
+      const response = await fetchWithTimeout(agentContext.config.agentDependencies.fetch, uri, {
+        headers: {
+          Accept: 'application/statuslist+jwt',
+        },
+      })
+
+      if (!response.ok) {
+        throw new CredoError(
+          `Received invalid response with status ${
+            response.status
+          } when fetching status list from ${uri}. ${await response.text()}`
+        )
+      }
+
+      return await response.text()
+    }
+  }
+
+  /**
+   * Builds a `Verifier` for the status list JWT signature, gated by the trusted issuer that was matched
+   * for the credential issuer (the status list signer is not always the credential issuer).
+   *
+   * The library's `Verifier` only receives the unsigned token (`<header>.<payload>`) and the signature,
+   * so the status list JWT's own header (`x5c`/`kid`) is recovered by decoding the first segment.
+   */
+  private getStatusVerifier(
+    agentContext: AgentContext,
+    {
+      matchedTrustedIssuer,
+      credentialIssuerKey,
+      credentialIssuerCertificateChain,
+    }: {
+      matchedTrustedIssuer: TrustedIssuer | undefined
+      credentialIssuerKey: PublicJwk
+      credentialIssuerCertificateChain?: X509Certificate[]
+    }
+  ): Verifier {
+    return async (data, signatureBase64Url) => {
+      // A failure to extract or authorize the status list signer is thrown (rather than returning
+      // `false`) so the verification result carries the actual reason instead of a generic
+      // "invalid signature". Only the final signature check returns a boolean.
+      let header: { alg?: string; x5c?: string[]; kid?: string }
+      try {
+        header = JsonEncoder.fromBase64Url(data.split('.')[0])
+      } catch (error) {
+        throw new SdJwtVcError('Unable to decode the status list JWT header to extract the status list signer.', {
+          cause: error,
+        })
+      }
+
+      // No matched trusted issuer (e.g. did default-allow path with no configured trusted issuers).
+      // Preserve the previous behavior of verifying the status list with the credential issuer key.
+      if (!matchedTrustedIssuer) {
+        // Copy the jwk, so the alg of the status list does not affect verification of the credential itself
+        const signerJwk = PublicJwk.fromUnknown(credentialIssuerKey.toJson())
+        setJwkAlgFromJwtHeader(signerJwk, header.alg)
+        return getSdJwtVerifier(agentContext, signerJwk)(data, signatureBase64Url)
+      }
+
+      if (matchedTrustedIssuer.method === 'x509') {
+        if (!credentialIssuerCertificateChain) {
+          throw new SdJwtVcError('Missing credential issuer certificate chain for x509 status list verification.')
+        }
+
+        const hasDedicatedStatusCertificates = matchedTrustedIssuer.status !== undefined
+        const statusCertificates = matchedTrustedIssuer.status ?? matchedTrustedIssuer.issuance
+
+        if (!header.x5c?.length) {
+          throw new SdJwtVcError('Unable to extract the status list signer: the status list JWT has no x5c header.')
+        }
+        if (statusCertificates.length === 0) {
+          throw new SdJwtVcError(
+            'No trusted status list certificates configured for the trusted issuer. The status list signer cannot be verified.'
+          )
+        }
+
+        try {
+          // Trust check only: ensure the status list certificate chain anchors in the status certificates.
+          await X509Service.validateCertificateChain(agentContext, {
+            certificateChain: header.x5c,
+            trustedCertificates: statusCertificates,
+          })
+        } catch (error) {
+          throw new SdJwtVcError(
+            'The status list certificate chain could not be validated against the trusted status certificates.',
+            { cause: error }
+          )
+        }
+
+        // Mirror mdoc: when no dedicated status certificate is configured, the status list must
+        // be signed by the exact same key as the credential issuer.
+        const statusListChain = header.x5c.map((certificate) => X509Certificate.fromEncodedCertificate(certificate))
+        const chainMatchesCredentialIssuer =
+          statusListChain.length === credentialIssuerCertificateChain.length &&
+          statusListChain.every((certificate, index) => certificate.equal(credentialIssuerCertificateChain[index]))
+        if (!hasDedicatedStatusCertificates && !chainMatchesCredentialIssuer) {
+          throw new SdJwtVcError(
+            'The status list signer chain does not match the credential issuer chain, and no dedicated trusted status certificates were configured for the trusted issuer.'
+          )
+        }
+
+        const signerJwk = statusListChain[0].publicJwk
+        setJwkAlgFromJwtHeader(signerJwk, header.alg)
+        return getSdJwtVerifier(agentContext, signerJwk)(data, signatureBase64Url)
+      }
+
+      // did: require the status list signer did to equal the trusted issuer did. The signer did is the
+      // `iss` of the status list payload; the `kid` header is typically a relative reference (e.g.
+      // `#key-1`) that has to be resolved against that did.
+      let statusListIssuerDid: unknown
+      try {
+        statusListIssuerDid = JsonEncoder.fromBase64Url(data.split('.')[1]).iss
+      } catch (error) {
+        throw new SdJwtVcError('Unable to decode the status list JWT payload to extract the status list signer.', {
+          cause: error,
+        })
+      }
+
+      if (typeof statusListIssuerDid !== 'string') {
+        throw new SdJwtVcError('Unable to extract the status list signer: the status list JWT payload has no `iss`.')
+      }
+      if (parseDid(statusListIssuerDid).did !== parseDid(matchedTrustedIssuer.issuance).did) {
+        throw new SdJwtVcError(
+          `The status list signer did '${parseDid(statusListIssuerDid).did}' does not match the trusted issuer did.`
+        )
+      }
+
+      const didUrl = header.kid?.startsWith('#') ? `${statusListIssuerDid}${header.kid}` : header.kid
+      if (!didUrl) {
+        throw new SdJwtVcError('Unable to resolve the status list signer: the status list JWT has no `kid` header.')
+      }
+
+      const { verificationMethod } = await resolveDidUrl(agentContext, didUrl)
+      const publicJwk = getPublicJwkFromVerificationMethod(verificationMethod)
+      setJwkAlgFromJwtHeader(publicJwk, header.alg)
+      return getSdJwtVerifier(agentContext, publicJwk)(data, signatureBase64Url)
+    }
+  }
+
+  private getVctFetcher(
+    agentContext: AgentContext,
+    {
+      baseVct,
+      throwErrorOnFetchError = true,
+      throwErrorOnUnsupportedVctValue = true,
+    }: { baseVct: string; throwErrorOnFetchError?: boolean; throwErrorOnUnsupportedVctValue?: boolean }
+  ): VCTFetcher {
+    const sdJwtVcConfig = agentContext.dependencyManager.resolve(SdJwtVcModuleConfig)
+    return async (uri: string, integrity) => {
+      if (sdJwtVcConfig.customTypeMetadataResolver) {
+        const customTypeMetadata = await sdJwtVcConfig.customTypeMetadataResolver(uri, integrity, {
+          isExtendedVct: uri !== baseVct,
+          defaultResolver: (userOverrideOptions) =>
+            this.httpsTypeMetadataResolver(agentContext, uri, integrity, {
+              throwErrorOnFetchError: userOverrideOptions.throwErrorOnFetchError ?? throwErrorOnFetchError,
+              throwErrorOnUnsupportedVctValue:
+                userOverrideOptions.throwErrorOnUnsupportedVctValue ?? throwErrorOnUnsupportedVctValue,
+              isExtendedVct: uri !== baseVct,
+            }),
+        })
+
+        return customTypeMetadata as SdJwtVcTypeMetadata | undefined
+      }
+
+      if (!uri.startsWith('https://')) {
+        if (!throwErrorOnUnsupportedVctValue) return undefined
+        throw new SdJwtVcError(
+          `Unable to resolve type metadata for vct '${uri}'. Only https supported and no 'customTypeMetadataResolver' provided in agent config.`
+        )
+      }
+
+      const defaultTypeMetadata = await this.httpsTypeMetadataResolver(agentContext, uri, integrity, {
+        throwErrorOnFetchError,
+        throwErrorOnUnsupportedVctValue,
+        isExtendedVct: uri !== baseVct,
+      })
+      return defaultTypeMetadata as SdJwtVcTypeMetadata | undefined
+    }
+  }
+
+  private async httpsTypeMetadataResolver(
+    agentContext: AgentContext,
+    vct: string,
+    integrity: string | undefined,
+    {
+      throwErrorOnFetchError,
+      throwErrorOnUnsupportedVctValue,
+      isExtendedVct,
+    }: { throwErrorOnFetchError: boolean; throwErrorOnUnsupportedVctValue: boolean; isExtendedVct?: boolean }
+  ) {
+    if (!vct.startsWith('https://')) {
+      if (!throwErrorOnUnsupportedVctValue) return undefined
+      throw new SdJwtVcError(
+        `Unable to resolve type metadata for vct '${vct}'. Only https supported for default resolver`
+      )
+    }
+    let firstError: Error | undefined
+
+    // Fist try the new type metadata URL
+    // We add a catch, so that if e.g. the request fails due to CORS (which throws an error
+    // we will still continue trying the legacy url)
+    const firstResponse = await fetchWithTimeout(agentContext.config.agentDependencies.fetch, vct).catch((error) => {
+      firstError = error
+      return undefined
+    })
+    let response = firstResponse
+
+    // If the response is not ok, try the legacy URL (will be removed in 0.7)
+    if (!response?.ok) {
+      // modify the uri based on https://www.ietf.org/archive/id/draft-ietf-oauth-sd-jwt-vc-04.html#section-6.3.1
+      const vctElements = vct.split('/')
+      vctElements.splice(3, 0, '.well-known/vct')
+      const legacyVctUrl = vctElements.join('/')
+
+      response = await fetchWithTimeout(agentContext.config.agentDependencies.fetch, legacyVctUrl).catch(
+        () => undefined
+      )
+    }
+
+    if (!response?.ok) {
+      if (!throwErrorOnFetchError) return undefined
+
+      if (firstResponse) {
+        throw new SdJwtVcError(
+          `Unable to resolve type metadata vct '${vct}'. Fetch returned a non-successful ${firstResponse.status} response. ${await firstResponse.text()}.`,
+          { cause: firstError }
+        )
+      } else {
+        throw new SdJwtVcError(
+          `Unable to resolve type metadata vct '${vct}'. Fetch returned a non-successful response.`,
+          { cause: firstError }
+        )
+      }
+    }
+
+    const typeMetadata = (await response.clone().json()) as Record<string, unknown>
+    if (integrity) {
+      if (typeof integrity !== 'string') {
+        throw new SdJwtVcError(
+          `Found '${isExtendedVct ? 'extends' : 'vct'}#integrity' with value '${integrity}' but value was not of type 'string'.`
+        )
+      }
+
+      IntegrityVerifier.verifyIntegrity(new Uint8Array(await response.arrayBuffer()), integrity)
+    }
+
+    return typeMetadata
+  }
+}

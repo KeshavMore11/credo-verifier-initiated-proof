@@ -1,0 +1,7 @@
+export * from './DidCommBasicMessageEvents'
+export * from './DidCommBasicMessageRole'
+export * from './DidCommBasicMessagesApi'
+export * from './DidCommBasicMessagesModule'
+export * from './messages'
+export * from './repository'
+export * from './services'

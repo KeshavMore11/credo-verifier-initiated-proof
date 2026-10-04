@@ -1,0 +1,7 @@
+export * from './DidCommCredentialAutoAcceptType'
+export * from './DidCommCredentialFormatSpec'
+export * from './DidCommCredentialPreviewAttribute'
+export * from './DidCommCredentialProblemReportReason'
+export * from './DidCommCredentialRole'
+export * from './DidCommCredentialState'
+export * from './DidCommRevocationNotification'

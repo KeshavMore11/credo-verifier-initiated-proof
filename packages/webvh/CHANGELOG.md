@@ -1,0 +1,242 @@
+# @credo-ts/webvh
+
+## 0.7.1
+
+### Patch Changes
+
+- 9f4278b: Add `DidDocument.findVerificationMethodsByPurpose` and
+  `DidDocument.findVerificationMethodsByTypeAndPurpose`.
+  
+  The relationship-aware methods resolve inline and referenced methods and
+  return them in requested relationship order while preserving entry order
+  within each relationship. The type-filtered method accepts one or more
+  verification-method representations and delegates relationship traversal to
+  the purpose-only method. DIDComm JSON-LD, JWT credentials, presentation
+  selection, DIDComm messaging, AnonCreds data integrity, Cheqd signing, peer
+  DID conversion, and did:webvh signing now use the appropriate shared lookup.
+  AnonCreds credential signing prefers verification methods authorized for
+  `assertionMethod`, with declared `verificationMethod` entries as a fallback.
+- 5840d28: fix(webvh): use a verification method URL in DID log proofs
+- eb4aa3c: fix(webvh): bump didwebvh-ts version to 2.8.0. This solves a hash calculation bug that makes previous DIDs created with this library incompatible with the spec. As a result, DIDs created with previous versions of Credo will fail to resolve. See https://github.com/decentralized-identity/didwebvh-ts/issues/93.
+- cfe86fa: X509 trusted certificates now can be provided in a new format. Previously it was a list of base64/pem/der encoded certificates, but now you can _also_ provide a list of objects in the format `[{issuance: string[], status? :string[]}]`. This is used for the new status indicator on mdoc. First, it looks for the used `issuance` trusted certificates and then validates the `status`, if available, with the `status` trusted certificates associated with the `issuance` property.
+- 2424a0b: Sign did:webvh attested resources with a verification method authorized for the proof purpose
+  
+  Attested resource proofs use the `assertionMethod` proof purpose, but the signing key was selected as
+  `verificationMethod[0]` without checking that it is referenced from `assertionMethod`. Resources were
+  written successfully and then failed to resolve with `Resolved resource proof is invalid.`
+  
+  - Resource registration now selects a verification method authorized for `assertionMethod`, and
+    validates an explicitly passed `options.verificationMethod` against that purpose.
+  - Newly created did:webvh dids reference their verification method from `assertionMethod`, and updating
+    a did no longer drops it.
+  - `verifyProof` asserts the expected proof purpose and logs the issues returned by the verifier.
+  
+  Existing dids need an `agent.dids.update` adding that reference, and the updated log republished, before
+  resources they sign will verify.
+- 182c8f7: Migrate `WebVhAnonCredsRegistry` proof creation/verification to use the core `W3cDataIntegrityApi` instead of a vendored `eddsa-jcs-2022` cryptosuite. This removes the duplicated cryptosuite implementation from `@credo-ts/webvh` in favor of `@credo-ts/core`'s W3C VC Data Integrity module.
+- cfe86fa: TokenStatusList is a new standard module on the agent. It allows you to create/update/fetch token status lists. It is up to the user to host this, this can be easily done with the `statusList` you receive from the `agent.tokenStatusList.createTokenStatusList(...)` function. Updating the statuslist allows you to change the status list credential state from valid to invalid, but also update the expiry time, rotate certificates, change signing algorithm, etc. Signatures are the default and mac should only be used if the user is aware of the security implications and has good reason to do so.
+- Updated dependencies [9f4278b]
+- Updated dependencies [f127ff5]
+- Updated dependencies [5cfcadb]
+- Updated dependencies [84dfcf4]
+- Updated dependencies [b75467c]
+- Updated dependencies [e80900a]
+- Updated dependencies [8ded8d2]
+- Updated dependencies [fd5016d]
+- Updated dependencies [d45aec0]
+- Updated dependencies [5cfcadb]
+- Updated dependencies [097c831]
+- Updated dependencies [20d6ab1]
+- Updated dependencies [bc4638e]
+- Updated dependencies [bc4638e]
+- Updated dependencies [bc4638e]
+- Updated dependencies [907f12f]
+- Updated dependencies [bc4638e]
+- Updated dependencies [96dc69b]
+- Updated dependencies [7dfafeb]
+- Updated dependencies [3a3eb03]
+- Updated dependencies [23c354e]
+- Updated dependencies [907cc54]
+- Updated dependencies [339f4cc]
+- Updated dependencies [bc4638e]
+- Updated dependencies [5cfcadb]
+- Updated dependencies [f127ff5]
+- Updated dependencies [cfe86fa]
+- Updated dependencies [e97c18b]
+- Updated dependencies [121dd14]
+- Updated dependencies [b75467c]
+- Updated dependencies [cfe86fa]
+- Updated dependencies [0a58888]
+- Updated dependencies [1e2088f]
+  - @credo-ts/core@0.7.1
+  - @credo-ts/anoncreds@0.7.1
+
+## 0.7.0
+
+### Minor Changes
+
+- cc65c27: - Removed buffer dependency and replaced with `@scure/base` for base-x encoding/decoding
+
+  - Updated DIDComm attachments to use base64url, not base64
+  - Updated tests to make sure urland base64 encoded items use base64url
+  - Added `fromBase64Url` to `TypedArrayEncoder` and `JsonEncoder`
+
+  Breaking changes:
+
+  1. `TypedArrayEncoder.fromBase64` does not support base64url anymore, please use `TypedArrayEncoder.fromBase64Url` for that. Same for `JsonEncoder`
+  2. `TypedArrayEncoder.fromString` has been replaced by `TypedArrayEncoder.fromUtf8String` to be consistent with `TypedArrayEncoder.toUtf8String`
+  3. Every place where we accepted `Buffer` as input we now only support `Uint8Array` as input
+  4. `TypedArrayEncoder.equals` is now constant-time, however I would still hesitate to use it for any private crypto operation 5. Removed `Uint8ArrayBuffer` type, not used anymore
+
+### Patch Changes
+
+- Updated dependencies [5056b97]
+- Updated dependencies [b75f0bf]
+- Updated dependencies [e0c829e]
+- Updated dependencies [120cee8]
+- Updated dependencies [c1ab9be]
+- Updated dependencies [10a3ce5]
+- Updated dependencies [cc65c27]
+- Updated dependencies [1a652e3]
+- Updated dependencies [b7aec4e]
+  - @credo-ts/core@0.7.0
+  - @credo-ts/anoncreds@0.7.0
+
+## 0.6.3
+
+### Patch Changes
+
+- 63802e7: feat: allow adding extra metadata to AnonCreds objects
+- 7830c2e: bump `didwebvh-ts` to `2.7.2`
+- Updated dependencies [73d2d59]
+  - @credo-ts/core@0.6.3
+  - @credo-ts/anoncreds@0.6.3
+
+## 0.6.2
+
+### Patch Changes
+
+- Updated dependencies [b9bd214]
+- Updated dependencies [69acbc3]
+- Updated dependencies [4a4473c]
+- Updated dependencies [2c15356]
+- Updated dependencies [4989dd9]
+- Updated dependencies [0f7171a]
+- Updated dependencies [e441cc1]
+- Updated dependencies [1969c67]
+- Updated dependencies [620bb38]
+- Updated dependencies [2073110]
+- Updated dependencies [620bb38]
+  - @credo-ts/core@0.6.2
+  - @credo-ts/anoncreds@0.6.2
+
+## 0.6.1
+
+### Patch Changes
+
+- Updated dependencies [9f60e1b]
+  - @credo-ts/core@0.6.1
+  - @credo-ts/anoncreds@0.6.1
+
+## 0.6.0
+
+### Minor Changes
+
+- bc6f0c7: Add support for ESM module syntax.
+
+  - Use `tsdown` to bundle for ESM -> tsdown is based on rust, so it should help with performance
+  - Update to `vitest` since jest doesn't work well with ESM -> this should also help with performance
+  - Simplify type checking -> just a single type check script instead of one for all packages. This should help with performance.
+
+  NOTE: Since React Native bundles your code, the update to ESM should not cause issues. In addition all latest minor releases of Node 20 and 22 now support requiring ESM modules. This means that even if you project is still a CommonJS project, it can now depend on ESM modules. For this reason Credo is now fully an ESM module.
+
+  Initially we added support for both CJS and ESM in parallel. However this caused issues with some libraries requiring the CJS output, and other the ESM output. Since Credo is only meant to be installed a single time for the dependency injection to work correctly, this resulted in unexpected behavior.
+
+- 31f3c8b: Add WebVH DID method implementation using didwebvh-ts package
+
+### Patch Changes
+
+- df48452: feat(webvh): support AnonCreds object registration (schema, credential definition, revocation definition, revocation status lists)
+- Updated dependencies [55318b2]
+- Updated dependencies [e936068]
+- Updated dependencies [43148b4]
+- Updated dependencies [2d10ec3]
+- Updated dependencies [6d83136]
+- Updated dependencies [312a7b2]
+- Updated dependencies [1495177]
+- Updated dependencies [2cace9c]
+- Updated dependencies [879ed2c]
+- Updated dependencies [297d209]
+- Updated dependencies [2312bb8]
+- Updated dependencies [11827cc]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [297d209]
+- Updated dependencies [0500765]
+- Updated dependencies [2cace9c]
+- Updated dependencies [bea846b]
+- Updated dependencies [13cd8cb]
+- Updated dependencies [2cace9c]
+- Updated dependencies [15acc49]
+- Updated dependencies [df7580c]
+- Updated dependencies [e936068]
+- Updated dependencies [16f109f]
+- Updated dependencies [e936068]
+- Updated dependencies [617b523]
+- Updated dependencies [90caf61]
+- Updated dependencies [b5fc7a6]
+- Updated dependencies [e936068]
+- Updated dependencies [dca4fdf]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [14673b1]
+- Updated dependencies [0c274fe]
+- Updated dependencies [2cace9c]
+- Updated dependencies [607659a]
+- Updated dependencies [44b1866]
+- Updated dependencies [5f08bc6]
+- Updated dependencies [27f971d]
+- Updated dependencies [cacd8ee]
+- Updated dependencies [e936068]
+- Updated dependencies [2d10ec3]
+- Updated dependencies [0500765]
+- Updated dependencies [1a4182e]
+- Updated dependencies [8be3d67]
+- Updated dependencies [90caf61]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [e936068]
+- Updated dependencies [290ff19]
+- Updated dependencies [8baa7d7]
+- Updated dependencies [decbcac]
+- Updated dependencies [9df09fa]
+- Updated dependencies [2cace9c]
+- Updated dependencies [70c849d]
+- Updated dependencies [0c274fe]
+- Updated dependencies [897c834]
+- Updated dependencies [5ff7bba]
+- Updated dependencies [a53fc54]
+- Updated dependencies [81e3571]
+- Updated dependencies [9ef54ba]
+- Updated dependencies [8533cd6]
+- Updated dependencies [e936068]
+- Updated dependencies [edd2edc]
+- Updated dependencies [e296877]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [1f74337]
+- Updated dependencies [c5e2a21]
+- Updated dependencies [d59e889]
+- Updated dependencies [e936068]
+- Updated dependencies [645363d]
+- Updated dependencies [e80794b]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [8baa7d7]
+- Updated dependencies [d06669c]
+- Updated dependencies [decbcac]
+- Updated dependencies [9befbcb]
+- Updated dependencies [6c8ab94]
+- Updated dependencies [bc6f0c7]
+- Updated dependencies [8be3d67]
+- Updated dependencies [bd28bba]
+- Updated dependencies [0d49804]
+- Updated dependencies [27f971d]
+  - @credo-ts/core@0.6.0
+  - @credo-ts/anoncreds@0.6.0

@@ -1,0 +1,24 @@
+{
+  "@context": ["https://www.w3.org/ns/did/v1"],
+  "verificationMethod": [
+    {
+      "id": "#41fb2ec7-1f8b-42bf-91a2-4ef9092ddc16",
+      "type": "Ed25519VerificationKey2018",
+      "publicKeyBase58": "7H8ScGrunfcGBwMhhRakDMYguLAWiNWhQ2maYH84J8fE",
+      "controller": "did:peer:4zQmZJVsg5xdo5gVX3HCEvwp29MxrCMvnBnPM2TTYqXjLseo:z72PjTR6nroWmhFJuXs5WUQ8NxVGvXQSLQKxsztQRxqcbNMndPt2GXVKX3fjbRX9h9qfjZWUBvvnmceMz1hyvdfdBnADMJQNeCcdivUypvyiFWkgq8DCTkjcQkjZqc7dubX5E8cd2npbrXbfmkw9sRPGi7vFxfdLCKiskUW2mpksEXwXvxZ8VFd56ZPqfStaajERmqiSU9vSxWfXC8SrwbcaHWm9KAWE5yYHKvUCtNqDB7VxNw5ApwkqpLajn58UANRHgCz2yf5bTvfRCWuUtdFe3n8aroc6chpMtS6j3RwxsL12kSjnWm24vEdsqq3KbGVanLeEFQ1HjKBFxwRsJrxGfT7wVPUbKu7hWemuf6cz2tZ5kPhAHVxWjahHNTATZXKzM8oDEn3PYC34pjkgZP6BeLeeAyK1hzcjCghaN6bdpTbYhSUqWKi6oaccX11gS6JLAt1ryUzG3sCeurVTUVrf1GntJpGkiPWRQhU66MpT4K7L7kZgrmcF8eL95pSbtZqhkQCyrsurKaVmNfwrCfNRr9JzxnXprbmjs4tikDVfSBk4TkDKcXck1YkZ6CjA8S1yHWKo7pGGfw3425SGAfXXLrYA29tAaQyxDKGjsFWorwKMUGdRA8psZgnFptcrwi1moAdn7cTExBFPr9PSk"
+    }
+  ],
+  "service": [
+    {
+      "id": "#service-0",
+      "serviceEndpoint": "https://example.com",
+      "type": "did-communication",
+      "priority": 0,
+      "recipientKeys": ["#41fb2ec7-1f8b-42bf-91a2-4ef9092ddc16"],
+      "accept": ["didcomm/aip2;env=rfc19"]
+    }
+  ],
+  "authentication": ["#41fb2ec7-1f8b-42bf-91a2-4ef9092ddc16"],
+  "id": "did:peer:4zQmZJVsg5xdo5gVX3HCEvwp29MxrCMvnBnPM2TTYqXjLseo:z72PjTR6nroWmhFJuXs5WUQ8NxVGvXQSLQKxsztQRxqcbNMndPt2GXVKX3fjbRX9h9qfjZWUBvvnmceMz1hyvdfdBnADMJQNeCcdivUypvyiFWkgq8DCTkjcQkjZqc7dubX5E8cd2npbrXbfmkw9sRPGi7vFxfdLCKiskUW2mpksEXwXvxZ8VFd56ZPqfStaajERmqiSU9vSxWfXC8SrwbcaHWm9KAWE5yYHKvUCtNqDB7VxNw5ApwkqpLajn58UANRHgCz2yf5bTvfRCWuUtdFe3n8aroc6chpMtS6j3RwxsL12kSjnWm24vEdsqq3KbGVanLeEFQ1HjKBFxwRsJrxGfT7wVPUbKu7hWemuf6cz2tZ5kPhAHVxWjahHNTATZXKzM8oDEn3PYC34pjkgZP6BeLeeAyK1hzcjCghaN6bdpTbYhSUqWKi6oaccX11gS6JLAt1ryUzG3sCeurVTUVrf1GntJpGkiPWRQhU66MpT4K7L7kZgrmcF8eL95pSbtZqhkQCyrsurKaVmNfwrCfNRr9JzxnXprbmjs4tikDVfSBk4TkDKcXck1YkZ6CjA8S1yHWKo7pGGfw3425SGAfXXLrYA29tAaQyxDKGjsFWorwKMUGdRA8psZgnFptcrwi1moAdn7cTExBFPr9PSk",
+  "alsoKnownAs": ["did:peer:4zQmZJVsg5xdo5gVX3HCEvwp29MxrCMvnBnPM2TTYqXjLseo"]
+}

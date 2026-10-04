@@ -1,0 +1,636 @@
+# Changelog
+
+## 0.7.1
+
+### Patch Changes
+
+- d86e941: Allow selecting and persisting the KMS backend used for OpenID4VC issuer access-token signing keys. Key rotation defaults to the issuer's current backend, supports moving to another backend, and deletes the previous key through its owning backend. Existing issuers continue to use the default KMS backend.
+- bd17194: fix: do not include c_nonce_expires_in in nonce endpoint response, it was never part of the nonce endpoint response
+- 2fa6955: Don't require the DPoP proof to use the client attestation confirmation key at the pushed authorization request and authorization challenge endpoints. Per the attestation-based client authentication draft, the DPoP key and the client instance key only have to be the same for the `attest_jwt_client_auth_dpop` method (DPoP combined mode), where a single DPoP proof replaces the client attestation PoP JWT. When the dedicated `OAuth-Client-Attestation-PoP` header is present, the DPoP proof is validated according to RFC 9449 independently, and its public key is not required to match the `cnf` claim of the client attestation. The issuer wrongly enforced key equality for both methods, rejecting interoperable wallets that use a separate DPoP key. Key equality for the DPoP-bound method at the token endpoint is unaffected.
+- e80900a: Fix selective disclosure of SD-JWT array elements when presenting with DCQL. Array elements that are selectively disclosable on their own were not disclosed, even when requested. They are now disclosed by their position in the array.
+  
+  DCQL claim sets of SD-JWT VC and W3C V2 SD-JWT VC credentials now include `disclosed_paths`: the paths to the claims the presentation discloses, including the claims that are not selectively disclosable. An array element has the position it has in the claims of the credential, where decoy digests don't count. A path stands for the claim and everything below it, so a claim that is disclosed as a whole has a single path. Pass them as the new `disclosedPaths` in `DcqlCredentialsForRequest` (done automatically by `selectCredentialsForRequest`).
+  
+  Disclosing an SD-JWT VC or W3C V2 SD-JWT VC based on `disclosedPayload` is deprecated, as it selects arrays as a whole. `disclosedPaths` will be required for these formats in the next breaking version.
+  
+  For the same reason, `applyDisclosuresForPayload` on `SdJwtVcService` and `W3cV2SdJwtCredentialService` is deprecated in favor of the new `applyDisclosuresForPaths`.
+  
+  `IDisclosureFrame` now also allows array positions in `_sd`, and the `ClaimPath` type is exported.
+- 5f1c572: Allow the `getDynamicIssuanceSession` callback to supply the `id` of the issuance session to create. A dynamic issuance session is created after the callback returns, so the callback could not previously know the id of the session it just authorized. Supplying it lets an external system reference the session before it exists, for example to record it in its own database while handling the same request. When omitted a random id is generated, as before.
+- 1d0c05d: Exposed updateIssuer method on OpenId4VcIssuerApi
+- 1a6562c: fix(openid4vc): include auth-code scope in credential offer
+- 117931c: Updated so that when the holder verifies an incoming credential and it fails, it does not log the entire credential
+- a5719ae: Add `ignoreWalletAttestationsWhenNotRequired` to the OpenID4VC issuer module config. By default, a wallet attestation provided by a client is always verified, even if the issuance session doesn't require it, and an invalid attestation fails the request. When enabled, a wallet attestation that is not required is ignored at the token, pushed authorization request and authorization challenge endpoints, so wallets that send an invalid attestation can still complete issuance sessions that don't require one.
+- e18d2cf: feat: interpret key attestation ISO 18045 levels hierarchically on the issuer, so a stronger attested level (e.g. `iso_18045_high`) satisfies a weaker required level (e.g. `iso_18045_moderate`). Also adds the `OpenId4VciKeyAttestationLevel` enum and `keyAttestationLevelSatisfies` helper.
+- 3f2bef1: Restore detailed mdoc verification error.
+- 20d6ab1: fix: correctly encode kid in the header of cose signatures, and do not include the kid in oid4vci request to the issuer
+- ab90ba7: Support configuring the signed issuer metadata signer when updating an issuer. `updateIssuerMetadata` and `updateIssuer` now accept a `metadataSigner`, which can be omitted to keep the current signer, set to a signer to enable or replace it, or set to `null` to stop signing the metadata. Previously a signer could only be configured when creating an issuer.
+- 0c8138e: Avoid an unnecessary request to the agent's own JWKs endpoint when verifying OpenID4VCI access tokens.
+  
+  When an access token issued by the agent's own built-in authorization server is verified, the agent no longer performs an HTTP request to its own `jwks_uri` to retrieve the access token signing key. The key is already held in the issuer record, and is now resolved locally.
+- 60efbe0: feat(openid4vc): support the Client Attestation PoP challenge and DPoP-bound method (draft 09 of OAuth 2.0 Attestation-Based Client Authentication)
+  
+  - The issuer can require a fresh, server-issued client attestation PoP `challenge` (enabled through the new `clientAttestationPopChallengeRequired` issuer config option). When enabled it advertises a `challenge_endpoint` and, at the token endpoint, uses the reactive `use_attestation_challenge` flow (returning the challenge in the `OAuth-Client-Attestation-Challenge` header) so clients retry automatically. The holder additionally fetches a challenge proactively from the `challenge_endpoint` for the pushed authorization request and authorization challenge endpoints.
+  - Support for the DPoP-bound client attestation method (`attest_jwt_client_auth_dpop`), where a single DPoP proof signed with the client instance key serves as both the DPoP proof and the client attestation PoP. Used automatically when the authorization server advertises it, in both the pre-authorized code flow and the authorization code flow. For the authorization code flow the whole interaction is bound to the client instance key: the authorization request commits the instance key as the DPoP key (`dpop_jkt`, with the issuer enforcing that the client attestation confirmation key matches the DPoP key), and the token endpoint uses the combined DPoP proof with that same key.
+  - The issuer now advertises the new `client_attestation_signing_alg_values_supported` / `client_attestation_pop_signing_alg_values_supported` metadata (configurable per issuer, stored as two nullable columns on the issuer record). Client attestation client authentication is advertised in `token_endpoint_auth_methods_supported` based on those signing algorithms being configured (matching how DPoP support is enabled via `dpop_signing_alg_values_supported`): `attest_jwt_client_auth` when the client attestation and pop signing algs are set, and the DPoP-bound `attest_jwt_client_auth_dpop` when the client attestation and DPoP signing algs are set.
+- 4f8bc6f: feat: add `deleteIssuanceSessionById` and `deleteVerificationSessionById` public APIs to allow cleanup of stored OpenID4VC session records.
+- bc4638e: Only pick a response encryption key from `client_metadata.jwks` that the key management backends of the agent can actually perform the `ECDH-ES` key agreement with. Previously the first recognized `enc` key was used, which failed later on if e.g. a verifier included a `P-521` key and the configured KMS backend (such as Askar) does not support that curve. The Askar and Node key management backends now also take the curve of the external public key into account in `isOperationSupported`.
+- 9b64ef6: feat: increase the max request payload size for oid4vci to 1mb and openid4vp to 5mb to be able to handle payloads containing images
+- bc4638e: Update to stable releases of `@owf/mdoc` (0.8.0), `@owf/cose` (0.4.0) and `@owf/token-status-list` (0.4.0), to `@sd-jwt/core` and `@sd-jwt/sd-jwt-vc` 0.21.0, and to `@openid4vc/*` 0.5.6. SD-JWT processing is now stricter: a compact SD-JWT must end with the `~` separator, disclosure salts must be unique within an SD-JWT, and the `sub` claim of a status list token must equal the `uri` that references it.
+- cfe86fa: X509 trusted certificates now can be provided in a new format. Previously it was a list of base64/pem/der encoded certificates, but now you can _also_ provide a list of objects in the format `[{issuance: string[], status? :string[]}]`. This is used for the new status indicator on mdoc. First, it looks for the used `issuance` trusted certificates and then validates the `status`, if available, with the `status` trusted certificates associated with the `issuance` property.
+- e1ddb2e: Consult the `getTrustedIssuersForVerification` callback for `did` signed OpenID4VC JWTs. Previously only `x5c` signed JWTs were checked against a trust list, meaning a signed authorization request (JAR), an OpenID4VCI key attestation, an OAuth2 client (wallet) attestation, or signed credential issuer metadata signed by any DID was accepted. Semantics now match `did` signed credentials in core: allowed when no callback is registered or it returns `undefined`, rejected when the signer DID is not in the returned list. Behavior for `x5c` signed JWTs is unchanged.
+- e97c18b: Add a global `getTrustedIssuersForVerification` agent callback for resolving trusted issuers during verification. Unlike the now-deprecated X.509-module `getTrustedCertificatesForVerification` callback (which it takes precedence over), it supports both X.509 certificate chains and DIDs and is extensible to other trust mechanisms. It is wired into SD-JWT VC, mdoc, W3C V1 JWT and LD-JSON, W3C V2 JWT and SD-JWT, and OpenID4VP verification.
+- 9b64ef6: chore: update to oid4vc-ts 0.5 stable
+- 121dd14: feat(vc2): implement W3C Verifiable Credentials 2.0 support including JWT, SD-JWT, and Data Integrity proof formats
+- e2871bb: feat(openid4vc): add a `getDynamicIssuanceSession` callback for dynamic (wallet-initiated) issuance that is not bound to a credential offer.
+  
+  The callback is the single decision point and application-level abuse-prevention gate for dynamic issuance. It is invoked when:
+  
+  - a Pushed Authorization Request or Authorization Challenge request is received by the internal authorization server without an `issuer_state` (the `chained` and `presentation` flows), or
+  - the credential endpoint receives an access token issued by an external authorization server that is not bound to a credential offer (the `external` flow).
+  
+  The callback input is typed based on the endpoint that received the request (discriminated by `origin`: `pushedAuthorizationRequest`, `authorizationChallengeRequest`, or `credentialRequest`). For the authorization-server origins the parsed (not yet verified) wallet attestation, DPoP and raw request are available; for the credential-request origin the verified access token payload is available.
+  
+  The callback returns options describing the issuance session to create (or throws / returns `undefined` to deny). The returned options are typed based on the chosen `authorizationFlow`:
+  
+  - `chained` - authorization is delegated to a chained (internal) authorization server.
+  - `presentation` - authorization is completed using an OpenID4VP presentation during issuance (requires `getVerificationSession`).
+  - `external` - authorization has already been completed at an external authorization server (DPoP/wallet attestation requirements and refresh tokens are not configurable, as these are handled by the external authorization server).
+  
+  This enables wallet-initiated issuance for the chained authorization server and presentation during issuance flows, and unifies the existing external authorization server dynamic issuance under the same callback.
+  
+  The `allowDynamicIssuanceSessions` configuration option is deprecated, and the `getDynamicIssuanceSession` callback takes precedence.
+- cfe86fa: TokenStatusList is a new standard module on the agent. It allows you to create/update/fetch token status lists. It is up to the user to host this, this can be easily done with the `statusList` you receive from the `agent.tokenStatusList.createTokenStatusList(...)` function. Updating the statuslist allows you to change the status list credential state from valid to invalid, but also update the expiry time, rotate certificates, change signing algorithm, etc. Signatures are the default and mac should only be used if the user is aware of the security implications and has good reason to do so.
+- Updated dependencies [9f4278b]
+- Updated dependencies [f127ff5]
+- Updated dependencies [5cfcadb]
+- Updated dependencies [84dfcf4]
+- Updated dependencies [e80900a]
+- Updated dependencies [8ded8d2]
+- Updated dependencies [fd5016d]
+- Updated dependencies [d45aec0]
+- Updated dependencies [5cfcadb]
+- Updated dependencies [097c831]
+- Updated dependencies [20d6ab1]
+- Updated dependencies [bc4638e]
+- Updated dependencies [bc4638e]
+- Updated dependencies [bc4638e]
+- Updated dependencies [907f12f]
+- Updated dependencies [bc4638e]
+- Updated dependencies [96dc69b]
+- Updated dependencies [7dfafeb]
+- Updated dependencies [3a3eb03]
+- Updated dependencies [23c354e]
+- Updated dependencies [907cc54]
+- Updated dependencies [339f4cc]
+- Updated dependencies [bc4638e]
+- Updated dependencies [5cfcadb]
+- Updated dependencies [f127ff5]
+- Updated dependencies [cfe86fa]
+- Updated dependencies [e97c18b]
+- Updated dependencies [121dd14]
+- Updated dependencies [b75467c]
+- Updated dependencies [cfe86fa]
+- Updated dependencies [0a58888]
+- Updated dependencies [1e2088f]
+  - @credo-ts/core@0.7.1
+
+## 0.7.0
+
+### Minor Changes
+
+- cc65c27: - Removed buffer dependency and replaced with `@scure/base` for base-x encoding/decoding
+
+  - Updated DIDComm attachments to use base64url, not base64
+  - Updated tests to make sure urland base64 encoded items use base64url
+  - Added `fromBase64Url` to `TypedArrayEncoder` and `JsonEncoder`
+
+  Breaking changes:
+
+  1. `TypedArrayEncoder.fromBase64` does not support base64url anymore, please use `TypedArrayEncoder.fromBase64Url` for that. Same for `JsonEncoder`
+  2. `TypedArrayEncoder.fromString` has been replaced by `TypedArrayEncoder.fromUtf8String` to be consistent with `TypedArrayEncoder.toUtf8String`
+  3. Every place where we accepted `Buffer` as input we now only support `Uint8Array` as input
+  4. `TypedArrayEncoder.equals` is now constant-time, however I would still hesitate to use it for any private crypto operation 5. Removed `Uint8ArrayBuffer` type, not used anymore
+
+### Patch Changes
+
+- 944358e: Fix query to find session when using authorization server.
+- 0bd4bd0: Set issuance error message based on error, similarly to other places.
+- Updated dependencies [5056b97]
+- Updated dependencies [b75f0bf]
+- Updated dependencies [120cee8]
+- Updated dependencies [c1ab9be]
+- Updated dependencies [10a3ce5]
+- Updated dependencies [cc65c27]
+- Updated dependencies [b7aec4e]
+  - @credo-ts/core@0.7.0
+
+## 0.6.3
+
+### Patch Changes
+
+- d7c08a1: Adds support for setting a custom expiration for individual credential offers and authorization requests.
+- 8f1b343: The state of the issuance session is now correctly updated to 'Error' if an error happens while creating a credential response.
+- e2cbb15: Introduces a new callback in the issuer configuration (`getChainedAuthorizationRequestParameters`),
+  which can be used to dynamically provide:
+
+  - The scopes to request to the chained authorization server.
+  - Any additional payload to add to the request to the chained authorization server.
+  - An allowed list of redirect URIs, if you want to limit to which wallets you're issuing to.
+
+  The following has been changed in `OpenId4VciChainedAuthorizationServerConfig`:
+
+  - The `scopesMapping` option is now optional. Either `scopesMapping` or the new callback
+    must be defined in order to fullfil a chained authorization request.
+  - A new `redirectUris` option has been added. This can be used when you want to statically
+    define the allowed `redirectUris`, instead of using the callback. If the callback is
+    provided, this option will not be used.
+
+  The option `getVerificationSessionForIssuanceSessionAuthorization` has been deprecated and replaced with `getVerificationSession`. Please update your usage.
+
+- 7a79b99: fix: update @openid4vci package to fix an issue where did-based proofs would not work in OpenID4VCI authorization code flow
+- 55389c4: The state of the issuance session is now correctly updated to 'Error' if an error happens while creating a deferred credential response.
+- 7f24d03: For new credential deferrals, Credo keeps track of until when the transaction is deferred.
+  If the wallet calls the endpoint before the interval has passed by, we automatically
+  return a new deferral response with the remaining interval.
+- 5358453: Adds an `holderBinding` object to the `OpenId4VcIssuanceSessionRecordTransaction`,
+  allowing you to easily use the holder binding in the deferred credential response
+  endpoint.
+
+  In addition, we now pass the respective `transaction` to `OpenId4VciDeferredCredentialRequestToCredentialMapperOptions`
+  when called. This simplifies the user logic, since you no longer need to retrieve the transaction manually.
+
+- 020c864: You can now customize the grace period during which an issuance session is kept alive after the deferral interval has passed by defining `deferralIntervalGracePeriodInSeconds` (default is 7 days).
+
+  Note that this only applies to deferrals happening after upgrading Credo. For sessions deferred before updating Credo, the previous expiry date will remain unless the issuance is deferred once more.
+
+- Updated dependencies [73d2d59]
+  - @credo-ts/core@0.6.3
+
+## 0.6.2
+
+### Patch Changes
+
+- df82d40: fix: add alg to OpenID4VP client_metadata jwk for encryption
+- b9bd214: feat: add a (configurable) 30 seconds skew to JWT-based credentials and other JWT object verification. This is to prevent verification errors based on slight deviations in server time. This does not affect non-JWT credentials yet (mDOC, JSON-LD)
+- 2c15356: fix: correctly extract authority of vc when verifying presentations against DCQL query
+- 657ec73: chore: update @openid4vc package to ^0.4.3. This includes several transformation logic fixes for transforming between drafts, that caused issues for projects updating from Credo 0.5
+- 8f63ac3: feat: add support for RFC 9207 OAuth 2.0 Authorization Server Issuer Identification, as required by HAIP/FAPI. For the Credo authorization server this is automatically handled (chained authorization). For external authorization servers this needs to be done manually. For wallets you need to parse the oid4vci authorization response using the new `agent.openid4vc.holder.parseAuthorizationCodeFromAuthorizationResponse` method.
+- 2073110: fix: correctly extract and store the kms key id for JWK-bound sd-jwt credentials received over openid4vc
+- 620bb38: feat: resolve, merge and store type metadata chain for SD-JWT VC
+- Updated dependencies [b9bd214]
+- Updated dependencies [69acbc3]
+- Updated dependencies [4a4473c]
+- Updated dependencies [2c15356]
+- Updated dependencies [4989dd9]
+- Updated dependencies [0f7171a]
+- Updated dependencies [e441cc1]
+- Updated dependencies [1969c67]
+- Updated dependencies [620bb38]
+- Updated dependencies [2073110]
+- Updated dependencies [620bb38]
+  - @credo-ts/core@0.6.2
+
+## 0.6.1
+
+### Patch Changes
+
+- 173ed6d: fix(openid4vc): add `grant_type_supported` to Credo hosted authorization server metadata
+- 8156e6e: fix: make `redirect_uri` required in the pushed authorization request endpoint (#2578)
+- 8156e6e: fix: also update authorization server configs on update of issuer record
+- a27de81: fix(openid4vc): loosen validation for multi-validation credential request. Some wallets send both `credential_configuration_id` and `format` which should not cause an error
+- Updated dependencies [9f60e1b]
+  - @credo-ts/core@0.6.1
+
+## 0.6.0
+
+### Minor Changes
+
+- cd6c836: Adds support for chained authorization code flows within the OpenID4VCI credential issuance. This means that external authorization servers can be leveraged to authenticate or identify the user. The access token from this external authorization server can be then used during the issuance process in order to, for example, fetch credential data from an external resource server.
+- 879ed2c: deprecate node 18
+- 81dbbec: fix: typo statefull -> stateful in configuration of OpenID4VCI module
+- 7e6e8f0: refactor(openid4vc): the OpenID4VC module now requires a top-level `app` property instead of a `router` for the `OpenId4VcVerifierModule` and `OpenId4VcIssuerModule`.
+
+  Using the `app` directly simplifies the setup, as you don't have to register the routers at the correct paths anymore on your express app.
+
+  We do recommend that you register your custom routes AFTER the Credo OpenID4VC routes have been registered, to ensure your custom middleware does not clash with Credo's routes.
+
+  The reason for changing the router to an `app` is that we need to host files at the top-level `.well-known` path of the server, which is not easily doable with the custom router approach.
+
+  If no app is provided, and the issuer or verifier module is enabled, a new app instance will be created.
+
+- 1f74337: feat: support redirect_uri client id prefix for openid4vp holder and verifier
+- e936068: when signing in Credo, it is now required to always reference a key id. For DIDs this is extracted from the DidRecord, and for JWKs (e.g. in holder binding) this is extracted form the `kid` of the JWK. For X509 certificates you need to make sure there is a key id attached to the certificate manually for now, since we don't have a X509 record like we have a DidRecord. For x509 certificates created before 0.6 you can use the legacy key id (`certificate.keyId = certificate.publicJwk.legacyKeyId`), for certificates created after 0.6 you need to manually store the key id and set it on the certificate after decoding.
+
+  For this reason, we now require instances of X509 certificates where we used to require encoded certificates, to allow you to set the keyId on the certificate beforehand.
+
+- 9f78a6e: feat(openid4vc): openid4vp alpha
+- 5f08bc6: feat: allow dynamicaly providing x509 certificates for all types of verifications
+- 9f78a6e: resolveIssuanceAuthorizationRequest has been renamed to resolveOpenId4VciAuthorizationRequest
+- e936068: The `Key` and `Jwk` classes have been removed in favour of a new `PublicJwk` class, and all APIs in Credo have been updated to use the new `PublicJwk` class. Leveraging Jwk as the base for all APIs provides more flexility and makes it easier to support key types where it's not always so easy to extract the raw public key bytes. In addition all the previous Jwk relatedfunctionality has been replaced with the new KMS jwk functionalty. For example `JwaSignatureAlgorithm` is now `Kms.KnownJwaSignatureAlgorithms`.
+- 0500765: **BREAKING**: Refactored credential storage to support batch credentials with KMS key tracking
+
+  This is a significant change to how credentials are stored and accessed in Credo. The main user-facing changes are:
+
+  ### Credential Records now support multiple credential instances
+
+  All credential record types (`W3cCredentialRecord`, `W3cV2CredentialRecord`, `SdJwtVcRecord`, `MdocRecord`) now support storing multiple credential instances in a single record. This enables:
+
+  - Batch issuance workflows where multiple credentials are issued together
+  - Tracking which KMS key was used to sign each credential instance
+  - Better support for credential refresh and reissuance scenarios
+
+  ### API Changes
+
+  **Storing Credentials:**
+
+  - The `storeCredential()` method now expects a `record` parameter instead of a `credential` parameter
+  - You must create the record first using `W3cCredentialRecord.fromCredential()` or similar constructors. Store credential expecting a record allows the OpenID4VC module to already return the credential record with the linked kms keys. In the future the OpenID4VC display metadata will also be added to the record automatically.
+
+  ```typescript
+  // Before
+  await agent.w3cCredentials.storeCredential({ credential });
+
+  // After
+  const record = W3cCredentialRecord.fromCredential(credential);
+  await agent.w3cCredentials.store({ record });
+  ```
+
+  **Accessing Credentials:**
+
+  - Records now use `firstCredential` property to access the primary credential instead of `credential`
+  - Use `credentialInstances` array to access all instances in a batch record
+  - The `multiInstanceState` property tracks the state of credential instances:
+    - `SingleInstanceUnused`: Single instance that has never been used
+    - `SingleInstanceUsed`: Single instance that has been used at least once
+    - `MultiInstanceFirstUnused`: Credential was originally a multi instance credential, where the first instance is unused.
+    - `MultiInstanceFirstUsed`: Credential was originally a multi instance credential, where the first instance is used. It may still have other instances that are unused (which can be detected if the length of credentialInstances > 1)
+
+  ```typescript
+  // Before
+  const credential = record.credential;
+
+  // After
+  const credential = record.firstCredential;
+
+  // Check credential state
+  if (
+    record.multiInstanceState ===
+    CredentialMultiInstanceState.MultiInstanceLastUnused
+  ) {
+    // Has unused instances available
+  }
+  ```
+
+  ### KMS Key Tracking
+
+  Credential instances now track which KMS key was used to sign them:
+
+  - Each credential instance can have an associated `kmsKeyId`
+  - This enables key rotation and multi-tenant scenarios where different keys are used
+  - The KMS key ID is stored in the credential record and synced with credential metadata
+
+  ### Storage Service Updates
+
+  - Added `lockedUpdate()` method to storage services for atomic updates with record locking
+  - Prevents race conditions when updating records concurrently
+  - Throws error if trying to update a record that has been modified since it was loaded
+
+  ### Migration Notes
+
+  If you have custom code that:
+
+  - Stores credentials using `storeCredential()` - update to use the new `store()` API
+  - Accesses `record.credential` - update to use `record.firstCredential`
+  - Directly constructs credential records - ensure you use the proper constructors with `credentialInstances` array
+
+- 9f78a6e: feat(openid4vc): add support for new dcql query syntax for oid4vp
+- e936068: The wallet API has been completely rewritten to be more generic, support multiple backends at the same time, support generic encrypting and decryption, support symmetric keys, and enable backends that use key ids rather than the public key to identify a key. This has resulted in significant breaking changes, and all usages of the wallet api should be updated to use the new `agent.kms` APIs. In addition the wallet is not available anymore on the agentContext. If you used this, instead inject the KMS API using `agentContext.resolve(Kms.KeyManagementApi)`.
+- 290ff19: use dc+sd-jwt as SD-JWT VC typ header by default and verify that SD-JWT VCs have either dc+sd-jwt or vc+sd-jwt as typ header. You can still use vc+sd-jwt as typ header by providing the headerType value when signing an SD-JWT VC. For OID4VCI the typ header is based on the oid4vci credential format used.
+- 9f78a6e: refactor: Support for SIOPv2 has been removed and all interfaces and classes that included Siop in the name (such as OpenId4VcSiopHolderService) have been renamed to OpenId4Vp (so OpenId4VpHolderService)
+- 70c849d: update target for tsc compiler to ES2020. Generally this should not have an impact for the supported environments (Node.JS / React Native). However this will have to be tested in React Native
+- 8baa7d7: changed the `v1.draft11-13` and `v1.draft13` versions for credential offers to `v1.draft11-15` and `v1.draft15`. `v1.draft15` is compatible with draft 13, but you're responsible for correctly configuring the credential configurations supported.
+- cfc2ac4: Added support for Draft 16 of the OpenID for Verifiable Credential Issuance, including deferred credential issuance. Please note that the deferred credential issuance is only supported as described by Draft 16.
+- 81e3571: BREAKING CHANGE:
+
+  `label` and `connectionImageUrl` have been dropped from Agent configuration. Therefore, it must be specified manually in all DIDComm connection establishment related methods. If you don't want to specify any label, just use an empty value.
+
+  In the particular case of mediation provisioning through a `mediatorInvitationUrl`, the label will be always set to an empty value ('').
+
+- 17ec6b8: feat(openid4vc): oid4vci authorization code flow, presentation during issuance and batch issuance.
+
+  This is a big change to OpenID4VCI in Credo, with the neccsary breaking changes since we first added it to the framework. Over time the spec has changed significantly, but also our understanding of the standards and protocols.
+
+  **Authorization Code Flow**
+  Credo now supports the authorization code flow, for both issuer and holder. An issuer can configure multiple authorization servers, and work with external authorization servers as well. The integration is based on OAuth2, with several extension specifications, mainly the OAuth2 JWT Access Token Profile, as well as Token Introspection (for opaque access tokens). Verification works out of the box, as longs as the authorization server has a `jwks_uri` configured. For Token Introspection it's also required to provide a `clientId` and `clientSecret` in the authorization server config.
+
+  To use an external authorization server, the authorization server MUST include the `issuer_state` parameter from the credential offer in the access token. Otherwise it's not possible for Credo to correlate the authorization session to the offer session.
+
+  The demo-openid contains an example with external authorization server, which can be used as reference. The Credo authorization server supports DPoP and PKCE.
+
+  **Batch Issuance**
+  The credential request to credential mapper has been updated to support multiple proofs, and also multiple credential instances. The client can now also handle batch issuance.
+
+  **Presentation During Issuance**
+  The presenation during issuance allows to request presentation using OID4VP before granting authorization for issuance of one or more credentials. This flow is automatically handled by the `resolveAuthorizationRequest` method on the oid4vci holder service.
+
+- 8533cd6: - Adds support for working with W3C VCDM 2.0 credentials secured with JWTs (`vc+jwt`) and SD-JWTs (`vc+sd-jwt`).
+  - Adds support for issuing and presenting W3C VCDM 2.0 SD-JWTs (`vc+sd-jwt`) with the OpenID for Verifiable Credentials protocol.
+  - Updates the identifier of the SD-JHT format from `vc+sd-jwt` to `dc+sd-jwt` to be in line with Version 1 of the OpenID for Verifiable Presentations specification.
+- 9f78a6e: OpenID4VP draft 24 is supported along with transaction data, DCQL, and other features. This has impact on the API, but draft 21 is still supported by providing the `version` param when creating a request
+- 9f78a6e: the default value for `responseMode` has changed from `direct_post` (unencrypted) to `direct_post.jwt` (encrypted)
+- 9f78a6e: fixed an issue where expectedUpdate in an mdoc would be set to undefined. This is a breaking change as previously issued mDOCs containing expectedUpdate values of undefined are not valid anymore, and will cause issues during verification
+- 428fadd: Uses the correct credential structure in (Deferred) Credential Responses when using Draft 15+ of the OpenID for Verifiable Credential Issuance specification.
+
+  This means that Draft 15 is fully incompatible with previous drafts. As a consequence, the `version` option when creating a new offer credential has been changed to reflect that.
+
+- 1f74337: feat: support multiple presentations for OpenID4VP presentations with DCQL. This is only supported when the query allows 'multiple'. Due to this the API has now changed from a single presentation per query id, to an array of credential ids with at least one entry.
+- 9f78a6e: refactor: changed the DIF Presentation Exchnage returned credential entry `type` to `claimFormat` to better align with the DC API. In addition the selected credentials type for DIF PEX was changes from an array of credential records, to an object containig the record, claimFormat and disclosed payload
+- 8baa7d7: add support for OID4VCI draft 15, including wallet and key attestations. With this we have made changes to several APIs to better align with key attestations, and how credential binding resolving works. Instead of calling the holder binding resolver for each credential that will be requested once, it will in total be called once and you can return multiple keys, or a single key attestation. APIs have been simplified to better align with changes in the OID4VCI protocols, but OID4VCI draft 11 and 13 are still fully supported. Support for dc+sd-jwt format has also been added. Note that there have been incompatible metadata display/claim changes in the metadata structure between draft 14 and 15 and thus if you want to support both draft 15 and older drafts you have to make sure you're handling this correctly (e.g. by creating separate configurations to be used with draft 13 or 15), and make sure you're using dc+sd-jwt with draft and vc+sd-jwt with draft 13.
+- decbcac: The mdoc device response now verifies each document separately based on the trusted certificates callback. This ensures only the trusted certificates for that specific document are used. In addition, only ONE document per device response is supported for openid4vp verifications from now on, this is expected behaviour according to ISO 18013-7
+- bc6f0c7: Add support for ESM module syntax.
+
+  - Use `tsdown` to bundle for ESM -> tsdown is based on rust, so it should help with performance
+  - Update to `vitest` since jest doesn't work well with ESM -> this should also help with performance
+  - Simplify type checking -> just a single type check script instead of one for all packages. This should help with performance.
+
+  NOTE: Since React Native bundles your code, the update to ESM should not cause issues. In addition all latest minor releases of Node 20 and 22 now support requiring ESM modules. This means that even if you project is still a CommonJS project, it can now depend on ESM modules. For this reason Credo is now fully an ESM module.
+
+  Initially we added support for both CJS and ESM in parallel. However this caused issues with some libraries requiring the CJS output, and other the ESM output. Since Credo is only meant to be installed a single time for the dependency injection to work correctly, this resulted in unexpected behavior.
+
+- d9e04db: Update to Express JS v5. If you're using the DIDComm Http transports, or the OpenID4VC issuer and verifier packages you should update to Express v5
+- ebdc7bb: The openid4vc modules have been merged into a single module for easier setup.
+
+  You can now add the `OpenId4VcModule` to your agent and config the `issuer` and `verifier` config on it. If the config for `issuer` or `verifier` is enabled, that submodule will be activated, and can be accessed on the API of the OpenId4VcModule.
+
+  For convencience we now also expose the openid4vc module under the `openid4vc` property directly on the agent (instead of under `agent.modules`), but only if the module is registered under the `openid4vc` module key.
+
+  For example if before you were using `agent.modules.openId4VcIssuer.xxx` you can now write this as `agent.openid4vc.issuer.xxx` after upgrading to the combined `OpenId4VcModule`. The old modules are still availalbe, but you should remove these from your module regisration in favour of the new `OpenId4VcModule`.
+
+- 1f74337: feat: support OpenID4VP 1.0
+- 9f78a6e: support for creating authorization requests based on `x509_san_uri` client id scheme has been removed. The holder services still support the client id scheme. The client id scheme is removed starting from draft 25 (and replaced with x509_hash, which will be supported in a future version), and is incompatible with the new url structure of Credo.
+
+### Patch Changes
+
+- 8dc1156: feat: supported `redirect_uri` for openid4vp response
+- a888c97: Fix the return type of the credential mappers.
+- 2cace9c: The following modules are not experimental anymore:
+  - `DcqlModule`
+  - `DifPresentationExchangeModule`
+  - `SdJwtVcModule`
+  - `MdocModule`
+  - `TenantsModule`
+  - `CheqdModule`
+  - `DrpcModule`
+  - `OpenId4VcModule`
+  - `X509Module`
+- 66d3384: Added feature to add a verifyAuthorizationCallback as the holder to do additional validation on the authorization request when resolving it
+- a64ada0: Add support for refresh tokens in the context of the OpenID4VC, which can be used for deferred credential issuance.
+- 8a816d8: Bump `oid4vc-ts` package to fix issues when converting credential issuer metadata to newer drafts.
+- 568cc13: fix(openid4vc): Dynamic VP format support not correctly mapping ldp_vc
+- 13cd8cb: feat: support node 22
+- 6f3f621: Use base64 instead of base64url for encoding JWS `x5c` headers
+- 95e9f32: fix: check supported key types for dpop, to ensure the registered KMS actually supports the key type that will be used
+- 589a16e: Revert the verifyAuthorizationCallback. Should be called outside of the framework
+- 17ec6b8: fix(openid4vc): use `vp_formats` in client_metadata instead of `vp_formats supported` (#2089)
+- fccb5ab: Fixes an issue where an access token could not be retrieved more than once due to mismanagement of the issuance session state.
+- 607659a: feat: fetch sd-jwt type metadata
+- fee0260: Fix: correctly transform date on `OpenId4VcIssuanceSessionRecord`.
+- 90caf61: feat: support mdoc device response containing multiple documents for OpenID4VP presentation
+- 0500765: The OpenID4VCI holder service now returns a single credential record per credential request containing all the instances:
+
+  - Credential records are pre-populated with KMS key IDs used during issuance
+  - The holder can store received batch credentials using the `store()` method on the appropriate credential record API (`sdJwtVc`, `mdoc`, `w3cCredentials`, `w3cV2Credentials`)
+
+  ```typescript
+  const credentialResponse = await agent.openid4vc.holder.requestCredentials({
+    // ...
+  });
+
+  // Store all received credentials
+  for (const credential of credentialResponse.credentials) {
+    if (credential.record instanceof W3cCredentialRecord) {
+      await agent.w3cCredentials.store({ record: credential.record });
+    }
+    // Handle other credential types...
+  }
+  ```
+
+- 17ec6b8: feat(openid4vc): support jwk thumbprint for openid token issuer
+- c57cece: Added optional verifier_attestations when creating an authorization request as a verifier
+- 0c274fe: feat: support Ed25519 as an algorithm identifier for JWA
+- 468e9b4: Add custom import for express in the browser
+- a4bdf6d: Fallback to anonymous authentication when doing client authentication with refresh token endpoint.
+- 494c499: Fix the parsing of the claims field in the issuer metadata.
+- 645363d: feat: add support for creating and hosting signed credential issuer metadata
+- 27f971d: fix: only include supported mdoc algs in vp_formats metadata
+- 645363d: feat: support x509_hash client id prefix when making openid4vp requests
+- 6b2a0fc: fix: add missing return in resolvedAccessTokenPublicJwk getter
+- d6086e9: Export a few utils used by dependents.
+- 885030a: Bump the `oid4vc` packages to solve issues when parsing deferred credential responses.
+- Updated dependencies [55318b2]
+- Updated dependencies [e936068]
+- Updated dependencies [43148b4]
+- Updated dependencies [2d10ec3]
+- Updated dependencies [6d83136]
+- Updated dependencies [312a7b2]
+- Updated dependencies [1495177]
+- Updated dependencies [2cace9c]
+- Updated dependencies [879ed2c]
+- Updated dependencies [297d209]
+- Updated dependencies [2312bb8]
+- Updated dependencies [11827cc]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [297d209]
+- Updated dependencies [0500765]
+- Updated dependencies [bea846b]
+- Updated dependencies [13cd8cb]
+- Updated dependencies [2cace9c]
+- Updated dependencies [15acc49]
+- Updated dependencies [df7580c]
+- Updated dependencies [e936068]
+- Updated dependencies [16f109f]
+- Updated dependencies [e936068]
+- Updated dependencies [617b523]
+- Updated dependencies [90caf61]
+- Updated dependencies [e936068]
+- Updated dependencies [dca4fdf]
+- Updated dependencies [14673b1]
+- Updated dependencies [0c274fe]
+- Updated dependencies [2cace9c]
+- Updated dependencies [607659a]
+- Updated dependencies [44b1866]
+- Updated dependencies [5f08bc6]
+- Updated dependencies [27f971d]
+- Updated dependencies [cacd8ee]
+- Updated dependencies [e936068]
+- Updated dependencies [2d10ec3]
+- Updated dependencies [0500765]
+- Updated dependencies [1a4182e]
+- Updated dependencies [8be3d67]
+- Updated dependencies [90caf61]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [e936068]
+- Updated dependencies [290ff19]
+- Updated dependencies [8baa7d7]
+- Updated dependencies [decbcac]
+- Updated dependencies [9df09fa]
+- Updated dependencies [2cace9c]
+- Updated dependencies [70c849d]
+- Updated dependencies [0c274fe]
+- Updated dependencies [897c834]
+- Updated dependencies [a53fc54]
+- Updated dependencies [81e3571]
+- Updated dependencies [9ef54ba]
+- Updated dependencies [8533cd6]
+- Updated dependencies [e936068]
+- Updated dependencies [edd2edc]
+- Updated dependencies [e296877]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [1f74337]
+- Updated dependencies [c5e2a21]
+- Updated dependencies [d59e889]
+- Updated dependencies [e936068]
+- Updated dependencies [645363d]
+- Updated dependencies [e80794b]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [8baa7d7]
+- Updated dependencies [decbcac]
+- Updated dependencies [6c8ab94]
+- Updated dependencies [bc6f0c7]
+- Updated dependencies [8be3d67]
+- Updated dependencies [bd28bba]
+- Updated dependencies [0d49804]
+- Updated dependencies [27f971d]
+  - @credo-ts/core@0.6.0
+
+## 0.5.13
+
+### Patch Changes
+
+- 595c3d6: feat: mdoc device response and presentation over oid4vp
+- Updated dependencies [595c3d6]
+  - @credo-ts/core@0.5.13
+
+## 0.5.12
+
+### Patch Changes
+
+- 1d83159: feat: add jarm-support
+- Updated dependencies [3c85565]
+- Updated dependencies [3c85565]
+- Updated dependencies [7d51fcb]
+- Updated dependencies [9756a4a]
+  - @credo-ts/core@0.5.12
+
+## 0.5.11
+
+### Patch Changes
+
+- 6c2dd88: add support for cose_key as cryptographic_binding_methods_supported value
+  - @credo-ts/core@0.5.11
+
+## 0.5.10
+
+### Patch Changes
+
+- 2110e4a: fix: incorrect generation of code verifier for pkce
+- 2110e4a: fix: include client_id when requesting credential using authorization_code flow
+- 35a04e3: fix v11 metadata typing and update v11<->v13 tranformation logic accordingly
+- fa62b74: Add support for Demonstrating Proof of Possesion (DPoP) when receiving credentials using OpenID4VCI
+- a093150: fix: pass the `clientId` in the `requestCredentials` method from the API down to the service
+- Updated dependencies [fa62b74]
+  - @credo-ts/core@0.5.10
+
+## 0.5.9
+
+### Patch Changes
+
+- a12d80c: feat: update to openid4vc v1 draft 13, with v11 compatibility
+  - @credo-ts/core@0.5.9
+
+## 0.5.8
+
+### Patch Changes
+
+- 3819eb2: Adds support for issuance and verification of SD-JWT VCs using x509 certificates over OpenID4VC, as well as adds support for the `x509_san_uri` and `x509_san_dns` values for `client_id_scheme`. It also adds support for OpenID4VP Draft 20
+- Updated dependencies [3819eb2]
+- Updated dependencies [15d0a54]
+- Updated dependencies [a5235e7]
+  - @credo-ts/core@0.5.8
+
+## 0.5.7
+
+### Patch Changes
+
+- 2173952: Fix an issue where `express` was being bundled in React Native applications even though the `OpenId4VcIssuerModule` and `OpenId4VcVerifierModule` were not used, causing runtime errors.
+- Updated dependencies [352383f]
+- Updated dependencies [1044c9d]
+  - @credo-ts/core@0.5.7
+
+## 0.5.6
+
+### Patch Changes
+
+- 66e696d: Fix build issue causing error with importing packages in 0.5.5 release
+- Updated dependencies [66e696d]
+  - @credo-ts/core@0.5.6
+
+## 0.5.5
+
+### Patch Changes
+
+- 482a630: - feat: allow serving dids from did record (#1856)
+  - fix: set created at for anoncreds records (#1862)
+  - feat: add goal to public api for credential and proof (#1867)
+  - fix(oob): only reuse connection if enabled (#1868)
+  - fix: issuer id query anoncreds w3c (#1870)
+  - feat: sd-jwt issuance without holder binding (#1871)
+  - chore: update oid4vci deps (#1873)
+  - fix: query for qualified/unqualified forms in revocation notification (#1866)
+  - fix: wrong schema id is stored for credentials (#1884)
+  - fix: process credential or proof problem report message related to connectionless or out of band exchange (#1859)
+  - fix: unqualified indy revRegDefId in migration (#1887)
+  - feat: verify SD-JWT Token status list and SD-JWT VC fixes (#1872)
+  - fix(anoncreds): combine creds into one proof (#1893)
+  - fix: AnonCreds proof requests with unqualified dids (#1891)
+  - fix: WebSocket priority in Message Pick Up V2 (#1888)
+  - fix: anoncreds predicate only proof with unqualified dids (#1907)
+  - feat: add pagination params to storage service (#1883)
+  - feat: add message handler middleware and fallback (#1894)
+- Updated dependencies [3239ef3]
+- Updated dependencies [d548fa4]
+- Updated dependencies [482a630]
+  - @credo-ts/core@0.5.5
+
+## [0.5.3](https://github.com/openwallet-foundation/credo-ts/compare/v0.5.2...v0.5.3) (2024-05-01)
+
+**Note:** Version bump only for package @credo-ts/openid4vc
+
+## [0.5.2](https://github.com/openwallet-foundation/credo-ts/compare/v0.5.1...v0.5.2) (2024-04-26)
+
+### Bug Fixes
+
+- access token can only be used for offer ([#1828](https://github.com/openwallet-foundation/credo-ts/issues/1828)) ([f54b90b](https://github.com/openwallet-foundation/credo-ts/commit/f54b90b0530b43a04df6299a39414a142d73276e))
+- oid4vp can be used separate from idtoken ([#1827](https://github.com/openwallet-foundation/credo-ts/issues/1827)) ([ca383c2](https://github.com/openwallet-foundation/credo-ts/commit/ca383c284e2073992a1fd280fca99bee1c2e19f8))
+- **openid4vc:** update verified state for more states ([#1831](https://github.com/openwallet-foundation/credo-ts/issues/1831)) ([958bf64](https://github.com/openwallet-foundation/credo-ts/commit/958bf647c086a2ca240e9ad140defc39b7f20f43))
+
+### Features
+
+- add disclosures so you know which fields are disclosed ([#1834](https://github.com/openwallet-foundation/credo-ts/issues/1834)) ([6ec43eb](https://github.com/openwallet-foundation/credo-ts/commit/6ec43eb1f539bd8d864d5bbd2ab35459809255ec))
+- apply new version of SD JWT package ([#1787](https://github.com/openwallet-foundation/credo-ts/issues/1787)) ([b41e158](https://github.com/openwallet-foundation/credo-ts/commit/b41e158098773d2f59b5b5cfb82cc6be06a57acd))
+- openid4vc issued state per credential ([#1829](https://github.com/openwallet-foundation/credo-ts/issues/1829)) ([229c621](https://github.com/openwallet-foundation/credo-ts/commit/229c62177c04060c7ca4c19dfd35bab328035067))
+
+## [0.5.1](https://github.com/openwallet-foundation/credo-ts/compare/v0.5.0...v0.5.1) (2024-03-28)
+
+### Bug Fixes
+
+- **openid4vc:** several fixes and improvements ([#1795](https://github.com/openwallet-foundation/credo-ts/issues/1795)) ([b83c517](https://github.com/openwallet-foundation/credo-ts/commit/b83c5173070594448d92f801331b3a31c7ac8049))
+
+# [0.5.0](https://github.com/openwallet-foundation/credo-ts/compare/v0.4.2...v0.5.0) (2024-03-13)
+
+### Features
+
+- anoncreds w3c migration ([#1744](https://github.com/openwallet-foundation/credo-ts/issues/1744)) ([d7c2bbb](https://github.com/openwallet-foundation/credo-ts/commit/d7c2bbb4fde57cdacbbf1ed40c6bd1423f7ab015))
+- **openid4vc:** persistance and events ([#1793](https://github.com/openwallet-foundation/credo-ts/issues/1793)) ([f4c386a](https://github.com/openwallet-foundation/credo-ts/commit/f4c386a6ccf8adb829cad30b81d524e6ffddb029))

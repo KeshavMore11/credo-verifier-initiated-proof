@@ -1,0 +1,86 @@
+import type { InitConfig } from '@credo-ts/core'
+
+import { Agent } from '@credo-ts/core'
+import { DidCommModule } from '@credo-ts/didcomm'
+import { agentDependencies } from '@credo-ts/node'
+import { TenantsModule } from '@credo-ts/tenants'
+import { InMemoryWalletModule } from '../../../tests/InMemoryWalletModule'
+import { testLogger } from '../../core/tests'
+
+const agentConfig: InitConfig = {
+  logger: testLogger,
+}
+
+// Create multi-tenant agent
+const agent = new Agent({
+  config: agentConfig,
+  dependencies: agentDependencies,
+  modules: {
+    didcomm: new DidCommModule({
+      endpoints: ['rxjs:tenant-agent1'],
+      connections: {
+        autoAcceptConnections: true,
+      },
+    }),
+    tenants: new TenantsModule({ sessionAcquireTimeout: 10000 }),
+    inMemory: new InMemoryWalletModule(),
+  },
+})
+
+describe('Tenants Sessions E2E', () => {
+  beforeAll(async () => {
+    await agent.initialize()
+  })
+
+  afterAll(async () => {
+    await agent.shutdown()
+  })
+
+  test('create 100 sessions in parallel for the same tenant and close them', async () => {
+    const numberOfSessions = 100
+
+    const tenantRecord = await agent.modules.tenants.createTenant({
+      config: {
+        label: 'Agent 1 Tenant 1',
+      },
+    })
+
+    const tenantAgentPromises = []
+
+    for (let session = 0; session < numberOfSessions; session++) {
+      tenantAgentPromises.push(agent.modules.tenants.getTenantAgent({ tenantId: tenantRecord.id }))
+    }
+
+    const tenantAgents = await Promise.all(tenantAgentPromises)
+
+    await Promise.all(tenantAgents.map((tenantAgent) => tenantAgent.endSession()))
+  })
+
+  test('create 5 sessions each for 20 tenants in parallel and close them', async () => {
+    const numberOfTenants = 20
+    const numberOfSessions = 5
+
+    const tenantRecordPromises = []
+    for (let tenantNo = 0; tenantNo < numberOfTenants; tenantNo++) {
+      const tenantRecordPromise = agent.modules.tenants.createTenant({
+        config: {
+          label: 'Agent 1 Tenant 1',
+        },
+      })
+
+      tenantRecordPromises.push(tenantRecordPromise)
+    }
+
+    const tenantRecords = await Promise.all(tenantRecordPromises)
+    const tenantAgentPromises = []
+    for (const tenantRecord of tenantRecords) {
+      for (let session = 0; session < numberOfSessions; session++) {
+        tenantAgentPromises.push(agent.modules.tenants.getTenantAgent({ tenantId: tenantRecord.id }))
+      }
+    }
+
+    const tenantAgents = await Promise.all(tenantAgentPromises)
+
+    await Promise.all(tenantAgents.map((tenantAgent) => tenantAgent.endSession()))
+  })
+})

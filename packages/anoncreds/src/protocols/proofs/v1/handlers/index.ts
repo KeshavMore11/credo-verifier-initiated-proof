@@ -1,0 +1,5 @@
+export * from './DidCommPresentationV1AckHandler'
+export * from './DidCommPresentationV1Handler'
+export * from './DidCommPresentationV1ProblemReportHandler'
+export * from './DidCommProposePresentationV1Handler'
+export * from './DidCommRequestPresentationV1Handler'

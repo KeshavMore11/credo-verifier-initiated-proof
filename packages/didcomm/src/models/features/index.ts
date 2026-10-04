@@ -1,0 +1,5 @@
+export * from './DidCommFeature'
+export * from './DidCommFeatureQuery'
+export * from './DidCommGoalCode'
+export * from './DidCommGovernanceFramework'
+export * from './DidCommProtocol'

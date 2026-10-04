@@ -1,0 +1,8 @@
+export * from './AnonCredsHolderService'
+export * from './AnonCredsHolderServiceOptions'
+export * from './AnonCredsIssuerService'
+export * from './AnonCredsIssuerServiceOptions'
+export * from './AnonCredsVerifierService'
+export * from './AnonCredsVerifierServiceOptions'
+export * from './registry'
+export { BasicTailsFileService, type TailsFileService } from './tails'

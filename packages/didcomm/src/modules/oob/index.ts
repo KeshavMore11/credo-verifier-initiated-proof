@@ -1,0 +1,6 @@
+export * from './DidCommOutOfBandApi'
+export * from './DidCommOutOfBandModule'
+export * from './DidCommOutOfBandService'
+export * from './domain'
+export * from './messages'
+export * from './repository'

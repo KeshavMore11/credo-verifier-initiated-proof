@@ -1,0 +1,9 @@
+# Skip unncecessary folders
+node_modules
+build
+.github
+
+# Skip environment files
+**/.env
+**/.env.*
+**/*.env

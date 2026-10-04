@@ -1,0 +1,186 @@
+# @credo-ts/redis-cache
+
+## 0.7.1
+
+### Patch Changes
+
+- fd5016d: feat: the `Cache` interface `get`, `set` and `remove` methods now accept a `CacheOptions` parameter with a `scope` that is either `'context'` (default) or `'global'`, allowing globally reusable data to be shared across agent contexts. The X.509 CRL summary cache, the Indy VDR pool lookup cache and the AnonCreds registry cache use the global scope, as they only hold publicly anchored data. The DID resolver caches documents of public did methods in the global scope, and documents of other did methods per agent context; the list of public did methods can be configured with the new `publicDidMethods` option of the dids module (default `['web', 'indy', 'sov', 'cheqd', 'hedera', 'webvh']`).
+  
+  Behavior changes to be aware of:
+  
+  - `InMemoryLruCache` now namespaces keys by `contextCorrelationId` by default. This fixes potential cross-context sharing of context-scoped entries (e.g. records cached by `CachedStorageService`) in multi-tenant setups. Single-context agents are not affected.
+  - `RedisCache` stores global-scope entries under a `global:` key prefix. Existing context-scoped Redis entries for the caches that moved to the global scope become cache misses after upgrading and expire through their TTL, causing a one-time refetch.
+- Updated dependencies [9f4278b]
+- Updated dependencies [f127ff5]
+- Updated dependencies [5cfcadb]
+- Updated dependencies [84dfcf4]
+- Updated dependencies [e80900a]
+- Updated dependencies [8ded8d2]
+- Updated dependencies [fd5016d]
+- Updated dependencies [d45aec0]
+- Updated dependencies [5cfcadb]
+- Updated dependencies [097c831]
+- Updated dependencies [20d6ab1]
+- Updated dependencies [bc4638e]
+- Updated dependencies [bc4638e]
+- Updated dependencies [bc4638e]
+- Updated dependencies [907f12f]
+- Updated dependencies [bc4638e]
+- Updated dependencies [96dc69b]
+- Updated dependencies [7dfafeb]
+- Updated dependencies [3a3eb03]
+- Updated dependencies [23c354e]
+- Updated dependencies [907cc54]
+- Updated dependencies [339f4cc]
+- Updated dependencies [bc4638e]
+- Updated dependencies [5cfcadb]
+- Updated dependencies [f127ff5]
+- Updated dependencies [cfe86fa]
+- Updated dependencies [e97c18b]
+- Updated dependencies [121dd14]
+- Updated dependencies [b75467c]
+- Updated dependencies [cfe86fa]
+- Updated dependencies [0a58888]
+- Updated dependencies [1e2088f]
+  - @credo-ts/core@0.7.1
+
+## 0.7.0
+
+### Patch Changes
+
+- Updated dependencies [5056b97]
+- Updated dependencies [b75f0bf]
+- Updated dependencies [120cee8]
+- Updated dependencies [c1ab9be]
+- Updated dependencies [10a3ce5]
+- Updated dependencies [cc65c27]
+- Updated dependencies [b7aec4e]
+  - @credo-ts/core@0.7.0
+
+## 0.6.3
+
+### Patch Changes
+
+- Updated dependencies [73d2d59]
+  - @credo-ts/core@0.6.3
+
+## 0.6.2
+
+### Patch Changes
+
+- Updated dependencies [b9bd214]
+- Updated dependencies [69acbc3]
+- Updated dependencies [4a4473c]
+- Updated dependencies [2c15356]
+- Updated dependencies [4989dd9]
+- Updated dependencies [0f7171a]
+- Updated dependencies [e441cc1]
+- Updated dependencies [1969c67]
+- Updated dependencies [620bb38]
+- Updated dependencies [2073110]
+- Updated dependencies [620bb38]
+  - @credo-ts/core@0.6.2
+
+## 0.6.1
+
+### Patch Changes
+
+- Updated dependencies [9f60e1b]
+  - @credo-ts/core@0.6.1
+
+## 0.6.0
+
+### Minor Changes
+
+- 879ed2c: deprecate node 18
+- bc6f0c7: Add support for ESM module syntax.
+
+  - Use `tsdown` to bundle for ESM -> tsdown is based on rust, so it should help with performance
+  - Update to `vitest` since jest doesn't work well with ESM -> this should also help with performance
+  - Simplify type checking -> just a single type check script instead of one for all packages. This should help with performance.
+
+  NOTE: Since React Native bundles your code, the update to ESM should not cause issues. In addition all latest minor releases of Node 20 and 22 now support requiring ESM modules. This means that even if you project is still a CommonJS project, it can now depend on ESM modules. For this reason Credo is now fully an ESM module.
+
+  Initially we added support for both CJS and ESM in parallel. However this caused issues with some libraries requiring the CJS output, and other the ESM output. Since Credo is only meant to be installed a single time for the dependency injection to work correctly, this resulted in unexpected behavior.
+
+### Patch Changes
+
+- 617b523: - Added a new package to use `redis` for caching in Node.js
+  - Add a new option `allowCache` to a record, which allows to CRUD the cache before calling the storage service
+    - This is only set to `true` on the `connectionRecord` and mediation records for now, improving the performance of the mediation flow
+- Updated dependencies [55318b2]
+- Updated dependencies [e936068]
+- Updated dependencies [43148b4]
+- Updated dependencies [2d10ec3]
+- Updated dependencies [6d83136]
+- Updated dependencies [312a7b2]
+- Updated dependencies [1495177]
+- Updated dependencies [2cace9c]
+- Updated dependencies [879ed2c]
+- Updated dependencies [297d209]
+- Updated dependencies [2312bb8]
+- Updated dependencies [11827cc]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [297d209]
+- Updated dependencies [0500765]
+- Updated dependencies [bea846b]
+- Updated dependencies [13cd8cb]
+- Updated dependencies [2cace9c]
+- Updated dependencies [15acc49]
+- Updated dependencies [df7580c]
+- Updated dependencies [e936068]
+- Updated dependencies [16f109f]
+- Updated dependencies [e936068]
+- Updated dependencies [617b523]
+- Updated dependencies [90caf61]
+- Updated dependencies [e936068]
+- Updated dependencies [dca4fdf]
+- Updated dependencies [14673b1]
+- Updated dependencies [0c274fe]
+- Updated dependencies [2cace9c]
+- Updated dependencies [607659a]
+- Updated dependencies [44b1866]
+- Updated dependencies [5f08bc6]
+- Updated dependencies [27f971d]
+- Updated dependencies [cacd8ee]
+- Updated dependencies [e936068]
+- Updated dependencies [2d10ec3]
+- Updated dependencies [0500765]
+- Updated dependencies [1a4182e]
+- Updated dependencies [8be3d67]
+- Updated dependencies [90caf61]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [e936068]
+- Updated dependencies [290ff19]
+- Updated dependencies [8baa7d7]
+- Updated dependencies [decbcac]
+- Updated dependencies [9df09fa]
+- Updated dependencies [2cace9c]
+- Updated dependencies [70c849d]
+- Updated dependencies [0c274fe]
+- Updated dependencies [897c834]
+- Updated dependencies [a53fc54]
+- Updated dependencies [81e3571]
+- Updated dependencies [9ef54ba]
+- Updated dependencies [8533cd6]
+- Updated dependencies [e936068]
+- Updated dependencies [edd2edc]
+- Updated dependencies [e296877]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [1f74337]
+- Updated dependencies [c5e2a21]
+- Updated dependencies [d59e889]
+- Updated dependencies [e936068]
+- Updated dependencies [645363d]
+- Updated dependencies [e80794b]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [8baa7d7]
+- Updated dependencies [decbcac]
+- Updated dependencies [6c8ab94]
+- Updated dependencies [bc6f0c7]
+- Updated dependencies [8be3d67]
+- Updated dependencies [bd28bba]
+- Updated dependencies [0d49804]
+- Updated dependencies [27f971d]
+  - @credo-ts/core@0.6.0

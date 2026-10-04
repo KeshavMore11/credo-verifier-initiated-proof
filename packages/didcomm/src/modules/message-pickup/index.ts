@@ -1,0 +1,8 @@
+export * from './DidCommMessagePickupApi'
+export * from './DidCommMessagePickupApiOptions'
+export * from './DidCommMessagePickupEvents'
+export * from './DidCommMessagePickupModule'
+export * from './DidCommMessagePickupModuleConfig'
+export * from './DidCommMessagePickupSession'
+export * from './protocol'
+export { DidCommMessagePickupSessionService } from './services'

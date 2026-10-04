@@ -1,0 +1,52 @@
+{
+  "name": "@credo-ts/askar",
+  "exports": {
+    "cli": "./build/index.mjs",
+    "import": "./src/index.ts"
+  },
+  "version": "0.7.1",
+  "files": [
+    "build"
+  ],
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public",
+    "types": "./build/index.d.mts",
+    "module": "./build/index.mjs",
+    "exports": {
+      ".": "./build/index.mjs",
+      "./package.json": "./package.json"
+    }
+  },
+  "homepage": "https://github.com/openwallet-foundation/credo-ts/tree/main/packages/askar",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openwallet-foundation/credo-ts",
+    "directory": "packages/askar"
+  },
+  "scripts": {
+    "build": "tsdown --config-loader unrun",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "@credo-ts/core": "workspace:*",
+    "@panva/hpke-noble": "catalog:",
+    "class-transformer": "catalog:",
+    "class-validator": "catalog:",
+    "hpke": "catalog:",
+    "rxjs": "catalog:",
+    "tsyringe": "catalog:"
+  },
+  "devDependencies": {
+    "@credo-ts/tenants": "workspace:*",
+    "@openwallet-foundation/askar-nodejs": "catalog:",
+    "@openwallet-foundation/askar-shared": "catalog:",
+    "@types/ref-array-di": "^1.2.8",
+    "@types/ref-struct-di": "^1.1.12",
+    "reflect-metadata": "catalog:",
+    "typescript": "catalog:"
+  },
+  "peerDependencies": {
+    "@openwallet-foundation/askar-shared": "^0.4.3 || ^0.5.0 || ^0.6.0"
+  }
+}

@@ -1,0 +1,918 @@
+import type { AnonCredsRequestProofFormat } from '@credo-ts/anoncreds/didcomm'
+import type { DidCommCredentialExchangeRecord } from '@credo-ts/didcomm'
+import {
+  DidCommPresentationV2Message,
+  DidCommProofExchangeRecord,
+  DidCommProofState,
+  DidCommProposePresentationV2Message,
+  DidCommRequestPresentationV2Message,
+} from '@credo-ts/didcomm'
+import { sleep } from '../../core/src/utils/sleep'
+import type { EventReplaySubject } from '../../core/tests'
+import { waitForProofExchangeRecordSubject } from '../../core/tests'
+import testLogger from '../../core/tests/logger'
+import { dateToTimestamp } from '../src/utils/timestamp'
+import type { AnonCredsTestsAgent } from './anoncredsSetup'
+import { issueAnonCredsCredential, setupAnonCredsTests } from './anoncredsSetup'
+import { InMemoryAnonCredsRegistry } from './InMemoryAnonCredsRegistry'
+
+describe('PP V2 AnonCreds Proofs', () => {
+  let faberAgent: AnonCredsTestsAgent
+  let faberReplay: EventReplaySubject
+  let aliceAgent: AnonCredsTestsAgent
+  let aliceReplay: EventReplaySubject
+  let credentialDefinitionId: string
+  let revocationRegistryDefinitionId: string | null
+  let aliceConnectionId: string
+  let faberConnectionId: string
+  let faberProofExchangeRecord: DidCommProofExchangeRecord
+  let aliceProofExchangeRecord: DidCommProofExchangeRecord
+  let faberCredentialExchangeRecord: DidCommCredentialExchangeRecord
+
+  const inMemoryRegistry = new InMemoryAnonCredsRegistry()
+
+  const issuerId = 'did:indy:local:LjgpST2rjsoxYegQDRm7EL'
+
+  beforeAll(async () => {
+    testLogger.test('Initializing the agents')
+    ;({
+      issuerAgent: faberAgent,
+      issuerReplay: faberReplay,
+
+      holderAgent: aliceAgent,
+      holderReplay: aliceReplay,
+      credentialDefinitionId,
+      revocationRegistryDefinitionId,
+      //revocationStatusListTimestamp,
+      issuerHolderConnectionId: faberConnectionId,
+      holderIssuerConnectionId: aliceConnectionId,
+    } = await setupAnonCredsTests({
+      issuerId,
+      issuerName: 'Faber agent AnonCreds proofs',
+      holderName: 'Alice agent AnonCreds proofs',
+      attributeNames: ['name', 'age'],
+      registries: [inMemoryRegistry],
+      supportRevocation: true,
+    }))
+    ;({ issuerCredentialExchangeRecord: faberCredentialExchangeRecord } = await issueAnonCredsCredential({
+      issuerAgent: faberAgent,
+      holderAgent: aliceAgent,
+      holderReplay: aliceReplay,
+      issuerReplay: faberReplay,
+      issuerHolderConnectionId: faberConnectionId,
+      revocationRegistryDefinitionId,
+      offer: {
+        credentialDefinitionId,
+        attributes: [
+          {
+            name: 'name',
+            value: 'John',
+          },
+          {
+            name: 'age',
+            value: '99',
+          },
+        ],
+      },
+    }))
+  })
+
+  afterAll(async () => {
+    testLogger.test('Shutting down both agents')
+    await faberAgent.shutdown()
+    await aliceAgent.shutdown()
+  })
+
+  test('Alice starts with proof proposal to Faber', async () => {
+    // Alice sends a presentation proposal to Faber
+    testLogger.test('Alice sends a presentation proposal to Faber')
+
+    aliceProofExchangeRecord = await aliceAgent.didcomm.proofs.proposeProof({
+      connectionId: aliceConnectionId,
+      protocolVersion: 'v2',
+      proofFormats: {
+        anoncreds: {
+          name: 'abc',
+          version: '1.0',
+          attributes: [
+            {
+              name: 'name',
+              value: 'Alice',
+              credentialDefinitionId,
+            },
+          ],
+          predicates: [
+            {
+              name: 'age',
+              predicate: '>=',
+              threshold: 50,
+              credentialDefinitionId,
+            },
+          ],
+        },
+      },
+    })
+
+    // Faber waits for a presentation proposal from Alice
+    testLogger.test('Faber waits for a presentation proposal from Alice')
+    faberProofExchangeRecord = await waitForProofExchangeRecordSubject(faberReplay, {
+      threadId: aliceProofExchangeRecord.threadId,
+      state: DidCommProofState.ProposalReceived,
+    })
+
+    const proposal = await faberAgent.didcomm.proofs.findProposalMessage(faberProofExchangeRecord.id)
+    expect(proposal).toMatchObject({
+      type: 'https://didcomm.org/present-proof/2.0/propose-presentation',
+      formats: [
+        {
+          attachmentId: expect.any(String),
+          format: 'anoncreds/proof-request@v1.0',
+        },
+      ],
+      proposalAttachments: [
+        {
+          id: expect.any(String),
+          mimeType: 'application/json',
+          data: {
+            base64: expect.any(String),
+          },
+        },
+      ],
+      id: expect.any(String),
+    })
+    expect(faberProofExchangeRecord.id).not.toBeNull()
+    expect(faberProofExchangeRecord).toMatchObject({
+      threadId: faberProofExchangeRecord.threadId,
+      state: DidCommProofState.ProposalReceived,
+      protocolVersion: 'v2',
+    })
+
+    // Faber accepts the presentation proposal from Alice
+    testLogger.test('Faber accepts presentation proposal from Alice')
+    faberProofExchangeRecord = await faberAgent.didcomm.proofs.acceptProposal({
+      proofExchangeRecordId: faberProofExchangeRecord.id,
+    })
+
+    // Alice waits for presentation request from Faber
+    testLogger.test('Alice waits for presentation request from Faber')
+    aliceProofExchangeRecord = await waitForProofExchangeRecordSubject(aliceReplay, {
+      threadId: faberProofExchangeRecord.threadId,
+      state: DidCommProofState.RequestReceived,
+    })
+
+    const request = await faberAgent.didcomm.proofs.findRequestMessage(faberProofExchangeRecord.id)
+    expect(request).toMatchObject({
+      type: 'https://didcomm.org/present-proof/2.0/request-presentation',
+      formats: [
+        {
+          attachmentId: expect.any(String),
+          format: 'anoncreds/proof-request@v1.0',
+        },
+      ],
+      requestAttachments: [
+        {
+          id: expect.any(String),
+          mimeType: 'application/json',
+          data: {
+            base64: expect.any(String),
+          },
+        },
+      ],
+      id: expect.any(String),
+      thread: {
+        threadId: faberProofExchangeRecord.threadId,
+      },
+    })
+
+    // Alice retrieves the requested credentials and accepts the presentation request
+    testLogger.test('Alice accepts presentation request from Faber')
+
+    const requestedCredentials = await aliceAgent.didcomm.proofs.selectCredentialsForRequest({
+      proofExchangeRecordId: aliceProofExchangeRecord.id,
+    })
+
+    const faberProofExchangeRecordPromise = waitForProofExchangeRecordSubject(faberReplay, {
+      threadId: aliceProofExchangeRecord.threadId,
+      state: DidCommProofState.PresentationReceived,
+    })
+
+    await aliceAgent.didcomm.proofs.acceptRequest({
+      proofExchangeRecordId: aliceProofExchangeRecord.id,
+      proofFormats: { anoncreds: requestedCredentials.proofFormats.anoncreds },
+    })
+
+    // Faber waits for the presentation from Alice
+    testLogger.test('Faber waits for presentation from Alice')
+    faberProofExchangeRecord = await faberProofExchangeRecordPromise
+
+    const presentation = await faberAgent.didcomm.proofs.findPresentationMessage(faberProofExchangeRecord.id)
+    expect(presentation).toMatchObject({
+      type: 'https://didcomm.org/present-proof/2.0/presentation',
+      formats: [
+        {
+          attachmentId: expect.any(String),
+          format: 'anoncreds/proof@v1.0',
+        },
+      ],
+      presentationAttachments: [
+        {
+          id: expect.any(String),
+          mimeType: 'application/json',
+          data: {
+            base64: expect.any(String),
+          },
+        },
+      ],
+      id: expect.any(String),
+      thread: {
+        threadId: faberProofExchangeRecord.threadId,
+      },
+    })
+    expect(faberProofExchangeRecord.id).not.toBeNull()
+    expect(faberProofExchangeRecord).toMatchObject({
+      threadId: faberProofExchangeRecord.threadId,
+      state: DidCommProofState.PresentationReceived,
+      protocolVersion: 'v2',
+    })
+
+    const aliceProofExchangeRecordPromise = waitForProofExchangeRecordSubject(aliceReplay, {
+      threadId: aliceProofExchangeRecord.threadId,
+      state: DidCommProofState.Done,
+    })
+
+    // Faber accepts the presentation provided by Alice
+    testLogger.test('Faber accepts the presentation provided by Alice')
+    await faberAgent.didcomm.proofs.acceptPresentation({ proofExchangeRecordId: faberProofExchangeRecord.id })
+
+    // Alice waits until she received a presentation acknowledgement
+    testLogger.test('Alice waits until she receives a presentation acknowledgement')
+    aliceProofExchangeRecord = await aliceProofExchangeRecordPromise
+
+    expect(faberProofExchangeRecord).toMatchObject({
+      type: DidCommProofExchangeRecord.type,
+      id: expect.any(String),
+      createdAt: expect.any(Date),
+      threadId: aliceProofExchangeRecord.threadId,
+      connectionId: expect.any(String),
+      isVerified: true,
+      state: DidCommProofState.PresentationReceived,
+    })
+
+    expect(aliceProofExchangeRecord).toMatchObject({
+      type: DidCommProofExchangeRecord.type,
+      id: expect.any(String),
+      createdAt: expect.any(Date),
+      threadId: faberProofExchangeRecord.threadId,
+      connectionId: expect.any(String),
+      state: DidCommProofState.Done,
+    })
+
+    const proposalMessage = await aliceAgent.didcomm.proofs.findProposalMessage(aliceProofExchangeRecord.id)
+    const requestMessage = await aliceAgent.didcomm.proofs.findRequestMessage(aliceProofExchangeRecord.id)
+    const presentationMessage = await aliceAgent.didcomm.proofs.findPresentationMessage(aliceProofExchangeRecord.id)
+
+    expect(proposalMessage).toBeInstanceOf(DidCommProposePresentationV2Message)
+    expect(requestMessage).toBeInstanceOf(DidCommRequestPresentationV2Message)
+    expect(presentationMessage).toBeInstanceOf(DidCommPresentationV2Message)
+
+    const formatData = await aliceAgent.didcomm.proofs.getFormatData(aliceProofExchangeRecord.id)
+
+    expect(formatData).toMatchObject({
+      proposal: {
+        anoncreds: {
+          name: 'abc',
+          version: '1.0',
+          nonce: expect.any(String),
+          requested_attributes: {
+            [Object.keys(formatData.proposal?.anoncreds?.requested_attributes ?? {})[0]]: {
+              name: 'name',
+              restrictions: [
+                {
+                  cred_def_id: credentialDefinitionId,
+                },
+              ],
+            },
+          },
+          requested_predicates: {
+            [Object.keys(formatData.proposal?.anoncreds?.requested_predicates ?? {})[0]]: {
+              name: 'age',
+              p_type: '>=',
+              p_value: 50,
+              restrictions: [
+                {
+                  cred_def_id: credentialDefinitionId,
+                },
+              ],
+            },
+          },
+        },
+      },
+      request: {
+        anoncreds: {
+          name: 'abc',
+          version: '1.0',
+          nonce: expect.any(String),
+          requested_attributes: {
+            [Object.keys(formatData.request?.anoncreds?.requested_attributes ?? {})[0]]: {
+              name: 'name',
+              restrictions: [
+                {
+                  cred_def_id: credentialDefinitionId,
+                },
+              ],
+            },
+          },
+          requested_predicates: {
+            [Object.keys(formatData.request?.anoncreds?.requested_predicates ?? {})[0]]: {
+              name: 'age',
+              p_type: '>=',
+              p_value: 50,
+              restrictions: [
+                {
+                  cred_def_id: credentialDefinitionId,
+                },
+              ],
+            },
+          },
+        },
+      },
+      presentation: {
+        anoncreds: {
+          proof: {
+            // Only one proof means the predicate and attribute was combined into one proof (and thus we can
+            // know that it was the same cred)
+            proofs: [
+              {
+                primary_proof: expect.any(Object),
+                non_revoc_proof: null,
+              },
+            ],
+            aggregated_proof: {
+              c_hash: expect.any(String),
+              c_list: expect.any(Array),
+            },
+          },
+          requested_proof: expect.any(Object),
+          identifiers: expect.any(Array),
+        },
+      },
+    })
+  })
+
+  test('Faber starts with proof request to Alice', async () => {
+    // Faber sends a presentation request to Alice
+    testLogger.test('Faber sends a presentation request to Alice')
+    faberProofExchangeRecord = await faberAgent.didcomm.proofs.requestProof({
+      protocolVersion: 'v2',
+      connectionId: faberConnectionId,
+      proofFormats: {
+        anoncreds: {
+          name: 'Proof Request',
+          version: '1.0.0',
+          requested_attributes: {
+            name: {
+              name: 'name',
+              restrictions: [
+                {
+                  cred_def_id: credentialDefinitionId,
+                },
+              ],
+            },
+          },
+          requested_predicates: {
+            age: {
+              name: 'age',
+              p_type: '>=',
+              p_value: 50,
+              restrictions: [
+                {
+                  cred_def_id: credentialDefinitionId,
+                },
+              ],
+            },
+          },
+        },
+      },
+    })
+
+    // Alice waits for presentation request from Faber
+    testLogger.test('Alice waits for presentation request from Faber')
+    aliceProofExchangeRecord = await waitForProofExchangeRecordSubject(aliceReplay, {
+      threadId: faberProofExchangeRecord.threadId,
+      state: DidCommProofState.RequestReceived,
+    })
+
+    const request = await faberAgent.didcomm.proofs.findRequestMessage(faberProofExchangeRecord.id)
+    expect(request).toMatchObject({
+      type: 'https://didcomm.org/present-proof/2.0/request-presentation',
+      formats: [
+        {
+          attachmentId: expect.any(String),
+          format: 'anoncreds/proof-request@v1.0',
+        },
+      ],
+      requestAttachments: [
+        {
+          id: expect.any(String),
+          mimeType: 'application/json',
+          data: {
+            base64: expect.any(String),
+          },
+        },
+      ],
+      id: expect.any(String),
+    })
+
+    expect(aliceProofExchangeRecord.id).not.toBeNull()
+    expect(aliceProofExchangeRecord).toMatchObject({
+      threadId: aliceProofExchangeRecord.threadId,
+      state: DidCommProofState.RequestReceived,
+      protocolVersion: 'v2',
+    })
+
+    // Alice retrieves the requested credentials and accepts the presentation request
+    testLogger.test('Alice accepts presentation request from Faber')
+
+    const requestedCredentials = await aliceAgent.didcomm.proofs.selectCredentialsForRequest({
+      proofExchangeRecordId: aliceProofExchangeRecord.id,
+    })
+
+    const faberProofExchangeRecordPromise = waitForProofExchangeRecordSubject(faberReplay, {
+      threadId: aliceProofExchangeRecord.threadId,
+      state: DidCommProofState.PresentationReceived,
+    })
+
+    await aliceAgent.didcomm.proofs.acceptRequest({
+      proofExchangeRecordId: aliceProofExchangeRecord.id,
+      proofFormats: { anoncreds: requestedCredentials.proofFormats.anoncreds },
+    })
+
+    // Faber waits until it receives a presentation from Alice
+    testLogger.test('Faber waits for presentation from Alice')
+    faberProofExchangeRecord = await faberProofExchangeRecordPromise
+
+    const presentation = await faberAgent.didcomm.proofs.findPresentationMessage(faberProofExchangeRecord.id)
+    expect(presentation).toMatchObject({
+      type: 'https://didcomm.org/present-proof/2.0/presentation',
+      formats: [
+        {
+          attachmentId: expect.any(String),
+          format: 'anoncreds/proof@v1.0',
+        },
+      ],
+      presentationAttachments: [
+        {
+          id: expect.any(String),
+          mimeType: 'application/json',
+          data: {
+            base64: expect.any(String),
+          },
+        },
+      ],
+      id: expect.any(String),
+      thread: {
+        threadId: faberProofExchangeRecord.threadId,
+      },
+    })
+    expect(faberProofExchangeRecord.id).not.toBeNull()
+    expect(faberProofExchangeRecord).toMatchObject({
+      threadId: faberProofExchangeRecord.threadId,
+      state: DidCommProofState.PresentationReceived,
+      protocolVersion: 'v2',
+    })
+
+    const aliceProofExchangeRecordPromise = waitForProofExchangeRecordSubject(aliceReplay, {
+      threadId: aliceProofExchangeRecord.threadId,
+      state: DidCommProofState.Done,
+    })
+
+    // Faber accepts the presentation
+    testLogger.test('Faber accept the presentation from Alice')
+    await faberAgent.didcomm.proofs.acceptPresentation({ proofExchangeRecordId: faberProofExchangeRecord.id })
+
+    // Alice waits until she receives a presentation acknowledgement
+    testLogger.test('Alice waits for acceptance by Faber')
+    aliceProofExchangeRecord = await aliceProofExchangeRecordPromise
+
+    expect(faberProofExchangeRecord).toMatchObject({
+      type: DidCommProofExchangeRecord.type,
+      id: expect.any(String),
+      createdAt: expect.any(Date),
+      threadId: aliceProofExchangeRecord.threadId,
+      connectionId: expect.any(String),
+      isVerified: true,
+      state: DidCommProofState.PresentationReceived,
+    })
+
+    expect(aliceProofExchangeRecord).toMatchObject({
+      type: DidCommProofExchangeRecord.type,
+      id: expect.any(String),
+      createdAt: expect.any(Date),
+      threadId: faberProofExchangeRecord.threadId,
+      connectionId: expect.any(String),
+      state: DidCommProofState.Done,
+    })
+  })
+
+  test('Alice provides credentials via call to getRequestedCredentials', async () => {
+    // Faber sends a presentation request to Alice
+    testLogger.test('Faber sends a presentation request to Alice')
+    faberProofExchangeRecord = await faberAgent.didcomm.proofs.requestProof({
+      protocolVersion: 'v2',
+      connectionId: faberConnectionId,
+      proofFormats: {
+        anoncreds: {
+          name: 'Proof Request',
+          version: '1.0.0',
+          requested_attributes: {
+            name: {
+              name: 'name',
+              restrictions: [
+                {
+                  cred_def_id: credentialDefinitionId,
+                },
+              ],
+            },
+          },
+          requested_predicates: {
+            age: {
+              name: 'age',
+              p_type: '>=',
+              p_value: 50,
+              restrictions: [
+                {
+                  cred_def_id: credentialDefinitionId,
+                },
+              ],
+            },
+          },
+        },
+      },
+    })
+
+    // Alice waits for presentation request from Faber
+    testLogger.test('Alice waits for presentation request from Faber')
+    aliceProofExchangeRecord = await waitForProofExchangeRecordSubject(aliceReplay, {
+      threadId: faberProofExchangeRecord.threadId,
+      state: DidCommProofState.RequestReceived,
+    })
+
+    const retrievedCredentials = await aliceAgent.didcomm.proofs.getCredentialsForRequest({
+      proofExchangeRecordId: aliceProofExchangeRecord.id,
+    })
+
+    expect(retrievedCredentials).toMatchObject({
+      proofFormats: {
+        anoncreds: {
+          attributes: {
+            name: [
+              {
+                credentialId: expect.any(String),
+                revealed: true,
+                credentialInfo: {
+                  credentialId: expect.any(String),
+                  attributes: {
+                    name: 'John',
+                    age: 99,
+                  },
+                  schemaId: expect.any(String),
+                  credentialDefinitionId: expect.any(String),
+                  credentialRevocationId: '1',
+                  revocationRegistryId: revocationRegistryDefinitionId,
+                },
+              },
+            ],
+          },
+          predicates: {
+            age: [
+              {
+                credentialId: expect.any(String),
+                credentialInfo: {
+                  credentialId: expect.any(String),
+                  attributes: {
+                    name: 'John',
+                    age: 99,
+                  },
+                  schemaId: expect.any(String),
+                  credentialDefinitionId: expect.any(String),
+                  credentialRevocationId: '1',
+                  revocationRegistryId: revocationRegistryDefinitionId,
+                },
+              },
+            ],
+          },
+        },
+      },
+    })
+  })
+
+  test('Faber starts with proof request to Alice but gets Problem Reported', async () => {
+    // Faber sends a presentation request to Alice
+    testLogger.test('Faber sends a presentation request to Alice')
+    faberProofExchangeRecord = await faberAgent.didcomm.proofs.requestProof({
+      protocolVersion: 'v2',
+      connectionId: faberConnectionId,
+      proofFormats: {
+        anoncreds: {
+          name: 'proof-request',
+          version: '1.0',
+          requested_attributes: {
+            name: {
+              name: 'name',
+              restrictions: [
+                {
+                  cred_def_id: credentialDefinitionId,
+                },
+              ],
+            },
+          },
+          requested_predicates: {
+            age: {
+              name: 'age',
+              p_type: '>=',
+              p_value: 50,
+              restrictions: [
+                {
+                  cred_def_id: credentialDefinitionId,
+                },
+              ],
+            },
+          },
+        },
+      },
+    })
+
+    // Alice waits for presentation request from Faber
+    testLogger.test('Alice waits for presentation request from Faber')
+    aliceProofExchangeRecord = await waitForProofExchangeRecordSubject(aliceReplay, {
+      threadId: faberProofExchangeRecord.threadId,
+      state: DidCommProofState.RequestReceived,
+    })
+
+    const request = await faberAgent.didcomm.proofs.findRequestMessage(faberProofExchangeRecord.id)
+
+    expect(request).toMatchObject({
+      type: 'https://didcomm.org/present-proof/2.0/request-presentation',
+      formats: [
+        {
+          attachmentId: expect.any(String),
+          format: 'anoncreds/proof-request@v1.0',
+        },
+      ],
+      requestAttachments: [
+        {
+          id: expect.any(String),
+          mimeType: 'application/json',
+          data: {
+            base64: expect.any(String),
+          },
+        },
+      ],
+      id: expect.any(String),
+    })
+
+    expect(aliceProofExchangeRecord.id).not.toBeNull()
+    expect(aliceProofExchangeRecord).toMatchObject({
+      threadId: aliceProofExchangeRecord.threadId,
+      state: DidCommProofState.RequestReceived,
+      protocolVersion: 'v2',
+    })
+
+    const faberProofExchangeRecordPromise = waitForProofExchangeRecordSubject(faberReplay, {
+      threadId: aliceProofExchangeRecord.threadId,
+      state: DidCommProofState.Abandoned,
+    })
+
+    aliceProofExchangeRecord = await aliceAgent.didcomm.proofs.sendProblemReport({
+      description: 'Problem inside proof request',
+      proofExchangeRecordId: aliceProofExchangeRecord.id,
+    })
+
+    faberProofExchangeRecord = await faberProofExchangeRecordPromise
+
+    expect(faberProofExchangeRecord).toMatchObject({
+      threadId: aliceProofExchangeRecord.threadId,
+      state: DidCommProofState.Abandoned,
+      protocolVersion: 'v2',
+    })
+  })
+
+  test('Credential is revoked after proof request and before presentation', async () => {
+    const nrpRequestedTime = dateToTimestamp(new Date()) + 1
+
+    const requestProofFormat: AnonCredsRequestProofFormat = {
+      non_revoked: { from: nrpRequestedTime, to: nrpRequestedTime },
+      name: 'Proof Request',
+      version: '1.0.0',
+      requested_attributes: {
+        name: {
+          name: 'name',
+          restrictions: [
+            {
+              cred_def_id: credentialDefinitionId,
+            },
+          ],
+        },
+      },
+      requested_predicates: {
+        age: {
+          name: 'age',
+          p_type: '>=',
+          p_value: 50,
+          restrictions: [
+            {
+              cred_def_id: credentialDefinitionId,
+            },
+          ],
+        },
+      },
+    }
+
+    // Faber sends a presentation request to Alice
+    testLogger.test('Faber sends a presentation request to Alice')
+    faberProofExchangeRecord = await faberAgent.didcomm.proofs.requestProof({
+      protocolVersion: 'v2',
+      connectionId: faberConnectionId,
+      proofFormats: {
+        anoncreds: requestProofFormat,
+      },
+    })
+
+    // Alice waits for presentation request from Faber
+    testLogger.test('Alice waits for presentation request from Faber')
+    aliceProofExchangeRecord = await waitForProofExchangeRecordSubject(aliceReplay, {
+      threadId: faberProofExchangeRecord.threadId,
+      state: DidCommProofState.RequestReceived,
+    })
+
+    // Alice retrieves the requested credentials and accepts the presentation request
+    testLogger.test('Alice accepts presentation request from Faber')
+
+    const requestedCredentials = await aliceAgent.didcomm.proofs.selectCredentialsForRequest({
+      proofExchangeRecordId: aliceProofExchangeRecord.id,
+    })
+
+    const faberProofExchangeRecordPromise = waitForProofExchangeRecordSubject(faberReplay, {
+      threadId: aliceProofExchangeRecord.threadId,
+      state: DidCommProofState.PresentationReceived,
+    })
+
+    // Revoke the credential
+    const credentialRevocationRegistryDefinitionId = faberCredentialExchangeRecord.getTag(
+      'anonCredsRevocationRegistryId'
+    ) as string
+    const credentialRevocationIndex = faberCredentialExchangeRecord.getTag('anonCredsCredentialRevocationId') as string
+
+    expect(credentialRevocationRegistryDefinitionId).toBeDefined()
+    expect(credentialRevocationIndex).toBeDefined()
+
+    // FIXME: do not use delays. Maybe we can add the timestamp to parameters?
+    // InMemoryAnonCredsRegistry would respect what we ask while actual VDRs will use their own
+    await sleep(2000)
+    await faberAgent.modules.anoncreds.updateRevocationStatusList({
+      revocationStatusList: {
+        revocationRegistryDefinitionId: credentialRevocationRegistryDefinitionId,
+        revokedCredentialIndexes: [Number(credentialRevocationIndex)],
+      },
+      options: {},
+    })
+
+    await aliceAgent.didcomm.proofs.acceptRequest({
+      proofExchangeRecordId: aliceProofExchangeRecord.id,
+      proofFormats: { anoncreds: requestedCredentials.proofFormats.anoncreds },
+    })
+
+    // Faber waits until it receives a presentation from Alice
+    testLogger.test('Faber waits for presentation from Alice')
+    faberProofExchangeRecord = await faberProofExchangeRecordPromise
+
+    const aliceProofExchangeRecordPromise = waitForProofExchangeRecordSubject(aliceReplay, {
+      threadId: aliceProofExchangeRecord.threadId,
+      state: DidCommProofState.Done,
+    })
+
+    // Faber accepts the presentation
+    testLogger.test('Faber accept the presentation from Alice')
+    await faberAgent.didcomm.proofs.acceptPresentation({ proofExchangeRecordId: faberProofExchangeRecord.id })
+
+    // Alice waits until she receives a presentation acknowledgement
+    testLogger.test('Alice waits for acceptance by Faber')
+    aliceProofExchangeRecord = await aliceProofExchangeRecordPromise
+
+    expect(faberProofExchangeRecord).toMatchObject({
+      threadId: aliceProofExchangeRecord.threadId,
+      isVerified: true,
+      state: DidCommProofState.PresentationReceived,
+    })
+
+    expect(aliceProofExchangeRecord).toMatchObject({
+      threadId: faberProofExchangeRecord.threadId,
+      state: DidCommProofState.Done,
+    })
+  })
+
+  test('Credential is revoked before proof request', async () => {
+    // Revoke the credential
+    const credentialRevocationRegistryDefinitionId = faberCredentialExchangeRecord.getTag(
+      'anonCredsRevocationRegistryId'
+    ) as string
+    const credentialRevocationIndex = faberCredentialExchangeRecord.getTag('anonCredsCredentialRevocationId') as string
+
+    expect(credentialRevocationRegistryDefinitionId).toBeDefined()
+    expect(credentialRevocationIndex).toBeDefined()
+
+    const { revocationStatusListState } = await faberAgent.modules.anoncreds.updateRevocationStatusList({
+      revocationStatusList: {
+        revocationRegistryDefinitionId: credentialRevocationRegistryDefinitionId,
+        revokedCredentialIndexes: [Number(credentialRevocationIndex)],
+      },
+      options: {},
+    })
+
+    expect(revocationStatusListState.revocationStatusList).toBeDefined()
+    const revokedTimestamp = revocationStatusListState.revocationStatusList?.timestamp
+
+    const nrpRequestedTime = (revokedTimestamp ?? dateToTimestamp(new Date())) + 1
+
+    const requestProofFormat: AnonCredsRequestProofFormat = {
+      non_revoked: { from: nrpRequestedTime, to: nrpRequestedTime },
+      name: 'Proof Request',
+      version: '1.0.0',
+      requested_attributes: {
+        name: {
+          name: 'name',
+          restrictions: [
+            {
+              cred_def_id: credentialDefinitionId,
+            },
+          ],
+        },
+      },
+      requested_predicates: {
+        age: {
+          name: 'age',
+          p_type: '>=',
+          p_value: 50,
+          restrictions: [
+            {
+              cred_def_id: credentialDefinitionId,
+            },
+          ],
+        },
+      },
+    }
+
+    // Faber sends a presentation request to Alice
+    testLogger.test('Faber sends a presentation request to Alice')
+    faberProofExchangeRecord = await faberAgent.didcomm.proofs.requestProof({
+      protocolVersion: 'v2',
+      connectionId: faberConnectionId,
+      proofFormats: {
+        anoncreds: requestProofFormat,
+      },
+    })
+
+    // Alice waits for presentation request from Faber
+    testLogger.test('Alice waits for presentation request from Faber')
+    aliceProofExchangeRecord = await waitForProofExchangeRecordSubject(aliceReplay, {
+      threadId: faberProofExchangeRecord.threadId,
+      state: DidCommProofState.RequestReceived,
+    })
+
+    // Alice retrieves the requested credentials and accepts the presentation request
+    testLogger.test('Alice accepts presentation request from Faber')
+
+    const requestedCredentials = await aliceAgent.didcomm.proofs.selectCredentialsForRequest({
+      proofExchangeRecordId: aliceProofExchangeRecord.id,
+      proofFormats: { anoncreds: { filterByNonRevocationRequirements: false } },
+    })
+
+    const faberProofExchangeRecordPromise = waitForProofExchangeRecordSubject(faberReplay, {
+      threadId: aliceProofExchangeRecord.threadId,
+      state: DidCommProofState.Abandoned,
+    })
+
+    await aliceAgent.didcomm.proofs.acceptRequest({
+      proofExchangeRecordId: aliceProofExchangeRecord.id,
+      proofFormats: { anoncreds: requestedCredentials.proofFormats.anoncreds },
+    })
+
+    // Faber waits until it receives a presentation from Alice
+    testLogger.test('Faber waits for presentation from Alice')
+    faberProofExchangeRecord = await faberProofExchangeRecordPromise
+
+    // Faber receives presentation and checks that it is not valid
+    expect(faberProofExchangeRecord).toMatchObject({
+      threadId: aliceProofExchangeRecord.threadId,
+      isVerified: false,
+      state: DidCommProofState.Abandoned,
+    })
+
+    // Faber will send a problem report, meaning for Alice that the proof state is abandoned
+    // as well
+    await waitForProofExchangeRecordSubject(aliceReplay, {
+      threadId: aliceProofExchangeRecord.threadId,
+      state: DidCommProofState.Abandoned,
+    })
+  })
+})

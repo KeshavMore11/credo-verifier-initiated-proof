@@ -1,0 +1,13 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@4.0.0/schema.json",
+  "changelog": "@changesets/cli/changelog",
+  "commit": "./commit.js",
+  "privatePackages": false,
+  "fixed": [["@credo-ts/*"]],
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "snapshot": {
+    "useCalculatedVersion": true
+  }
+}

@@ -1,0 +1,537 @@
+import type { Express } from 'express'
+import type {
+  OpenId4VciCredentialRequestToCredentialMapper,
+  OpenId4VciDeferredCredentialRequestToCredentialMapper,
+  OpenId4VciGetChainedAuthorizationRequestParameters,
+  OpenId4VciGetDynamicIssuanceSession,
+  OpenId4VciGetVerificationSession,
+} from './OpenId4VcIssuerServiceOptions'
+
+const DEFAULT_C_NONCE_EXPIRES_IN = 1 * 60 // 1 minute
+const DEFAULT_AUTHORIZATION_CODE_EXPIRES_IN = 1 * 60 // 1 minute
+const DEFAULT_TOKEN_EXPIRES_IN = 3 * 60 // 3 minutes
+const DEFAULT_REFRESH_TOKEN_EXPIRES_IN = 90 * 24 * 60 * 60 // 90 days
+const DEFAULT_DEFERRAL_INTERVAL_GRACE_PERIOD = 7 * 24 * 60 * 60 // 7 days
+const DEFAULT_STATEFUL_CREDENTIAL_OFFER_EXPIRES_IN = 3 * 60 // 3 minutes
+const DEFAULT_REQUEST_URI_EXPIRES_IN = 1 * 60 // 1 minute
+
+export interface InternalOpenId4VcIssuerModuleConfigOptions {
+  /**
+   * Base url at which the issuer endpoints will be hosted. All endpoints will be exposed with
+   * this path as prefix.
+   */
+  baseUrl: string
+
+  /**
+   * Express app on which the openid4vci endpoints will be registered.
+   */
+  app: Express
+
+  /**
+   * The time after which a cNonce will expire.
+   *
+   * @default 60 (1 minute)
+   */
+  cNonceExpiresInSeconds?: number
+
+  /**
+   * The time after which a stateful credential offer not bound to a subject expires. Once the offer has been bound
+   * to a subject the access token expiration takes effect. This is to prevent long-lived `pre-authorized_code` and
+   * `issuer_state` values.
+   *
+   * @default 180 (3 minutes)
+   */
+  statefulCredentialOfferExpirationInSeconds?: number
+
+  /**
+   * For how long should the issuance session be kept alive after the deferral interval
+   * has passed. This is to allow for allow some time for the holder to recheck whether
+   * the credential is ready or not.
+   *
+   * @default 604800 (7 days)
+   */
+  deferralIntervalGracePeriodInSeconds?: number
+
+  /**
+   * The time after which an authorization code will expire.
+   *
+   * @default 60 (1 minute)
+   */
+  authorizationCodeExpiresInSeconds?: number
+
+  /**
+   * The time after which an access token will expire.
+   *
+   * @default 180 (3 minutes)
+   */
+  accessTokenExpiresInSeconds?: number
+
+  /**
+   * The time after which a refresh token will expire.
+   *
+   * @default 7776000 (90 days)
+   */
+  refreshTokenExpiresInSeconds?: number
+
+  /**
+   * The time after which a pushed authorization request URI will expire.
+   *
+   * @default 60 (1 minute)
+   */
+  requestUriExpiresInSeconds?: number
+
+  /**
+   * Whether DPoP is required for all issuance sessions. This value can be overridden when creating
+   * a credential offer. If dpop is not required, but used by a client in the first request to credo,
+   * DPoP will be required going forward.
+   *
+   * @default false
+   */
+  dpopRequired?: boolean
+
+  /**
+   * Whether wallet attestations are required for all issuance sessions. This value can be overridden when creating
+   * a credential offer, but will have effect for dynamic issuance sessions. If wallet attestations are not required
+   * but used by a client in the first request to credo,
+   * wallet attestations will be required going forward.
+   *
+   * @default false
+   */
+  walletAttestationsRequired?: boolean
+
+  /**
+   * Whether to ignore wallet attestations that a client provides when they are not required for the issuance
+   * session. By default a provided wallet attestation is always verified, and the request is rejected if it
+   * is invalid. When enabled, a wallet attestation that is not required is not verified, and it won't
+   * become required for the rest of the issuance session.
+   *
+   * @default false
+   */
+  ignoreWalletAttestationsWhenNotRequired?: boolean
+
+  /**
+   * Whether a Client Attestation PoP `challenge` is required when a client authenticates using a client
+   * attestation, as defined in draft 09 of OAuth 2.0 Attestation-Based Client Authentication.
+   *
+   * When enabled, the authorization server metadata advertises a `challenge_endpoint`, and client
+   * attestation pop JWTs must include a valid `challenge` obtained from that endpoint (per §6.1, offering
+   * a challenge endpoint makes the challenge mandatory). When disabled the challenge endpoint is not
+   * advertised and no challenge is enforced.
+   *
+   * @default false
+   */
+  clientAttestationPopChallengeRequired?: boolean
+
+  /**
+   * Whether to allow dynamic issuance sessions based on a credential request.
+   *
+   * This only works with **external authorization servers** which issue access tokens without
+   * a `pre-authorized_code` or `issuer_state` parameter.
+   *
+   * For full control including support for presentation during issuance and chained authorization
+   * it is recommended to use the `getDynamicIssuanceSession` callback instead.
+   *
+   * @default false
+   *
+   * @deprecated
+   */
+  allowDynamicIssuanceSessions?: boolean
+
+  /**
+   * A function mapping a credential request to the credential to be issued.
+   *
+   * When multiple credentials are returned it is recommended to use different or approximate issuance and expiration
+   * times to prevent correlation based on the specific time
+   */
+  credentialRequestToCredentialMapper: OpenId4VciCredentialRequestToCredentialMapper
+
+  /**
+   * A function mapping a deferred credential request to the credential to be issued.
+   *
+   * When multiple credentials are returned it is recommended to use different or approximate issuance and expiration
+   * times to prevent correlation based on the specific time
+   */
+  deferredCredentialRequestToCredentialMapper?: OpenId4VciDeferredCredentialRequestToCredentialMapper
+
+  /**
+   * @deprecated use `getVerificationSession` instead.
+   */
+  getVerificationSessionForIssuanceSessionAuthorization?: OpenId4VciGetVerificationSession
+
+  /**
+   * Callback to get a verification session that needs to be fulfilled for the authorization of
+   * of a credential issuance session. Once the verification session has been completed the user can
+   * retrieve an authorization code and access token and retrieve the credential(s).
+   *
+   * Required if presentation during issuance flow is used
+   */
+  getVerificationSession?: OpenId4VciGetVerificationSession
+
+  /**
+   * Callback to get additional details for the chained authorization server flow.
+   * This will be called when a credential offer request is configured to use a chained
+   * authorization server, but the scopesMapping configuration is not defined.
+   *
+   * Required if chained authorization server flow is used without a static scopes mapping configuration.
+   */
+  getChainedAuthorizationRequestParameters?: OpenId4VciGetChainedAuthorizationRequestParameters
+
+  /**
+   * Callback to get the issuance session options for a dynamic (wallet-initiated) issuance request
+   * that is not bound to a credential offer. This will be called when:
+   *
+   * - a Pushed Authorization Request or Authorization Challenge request is received by the internal
+   *   authorization server without an `issuer_state` (the `chained` and `presentation` flows), or
+   * - the credential endpoint receives an access token issued by an external authorization server
+   *   that is not bound to a credential offer (the `external` flow).
+   *
+   * This callback is the single decision point for dynamic issuance and acts as the
+   * application-level abuse-prevention gate: returning session options allows the issuance, while
+   * throwing an `Oauth2ServerErrorResponseError` or returning `undefined`/`null` denies it.
+   *
+   * Required to support dynamic issuance for the chained authorization server, presentation during
+   * issuance, or external authorization server flow.
+   */
+  getDynamicIssuanceSession?: OpenId4VciGetDynamicIssuanceSession
+
+  /**
+   * Custom the paths used for endpoints
+   */
+  endpoints?: {
+    /**
+     * @default /nonce
+     */
+    nonce?: string
+
+    /**
+     * @default /challenge
+     */
+    authorizationChallenge?: string
+
+    /**
+     * @default /client-attestation-challenge
+     */
+    clientAttestationChallenge?: string
+
+    /**
+     * @default /offers
+     */
+    credentialOffer?: string
+
+    /**
+     * @default /credential
+     */
+    credential?: string
+
+    /**
+     * @default /deferred-credential
+     */
+    deferredCredential?: string
+
+    /**
+     * @default /token
+     */
+    accessToken?: string
+
+    /**
+     * @default /par
+     */
+    pushedAuthorizationRequest?: string
+
+    /**
+     * @default /authorize
+     */
+    authorization?: string
+
+    /**
+     * @default /redirect
+     */
+    redirect?: string
+
+    /**
+     * @default /jwks
+     */
+    jwks: string
+  }
+}
+
+export class OpenId4VcIssuerModuleConfig {
+  private options: InternalOpenId4VcIssuerModuleConfigOptions
+
+  /**
+   * Callback to get a verification session that needs to be fulfilled for the authorization of
+   * of a credential issuance session. Once the verification session has been completed the user can
+   * retrieve an authorization code and access token and retrieve the credential(s).
+   *
+   * Required if presentation during issuance flow is used
+   */
+  public getVerificationSession?: OpenId4VciGetVerificationSession
+
+  /**
+   * Callback to get additional details for the chained authorization server flow.
+   * This will be called when a credential offer request is configured to use a chained
+   * authorization server. If not defined, `scopesMapping` and `redirectUris` from
+   * the authorization server configuration will be used.
+   *
+   * Required if chained authorization server flow is used without a static scopes mapping configuration.
+   */
+  public getChainedAuthorizationRequestParameters?: OpenId4VciGetChainedAuthorizationRequestParameters
+
+  /**
+   * Callback to get the issuance session options for a dynamic (wallet-initiated) issuance request.
+   * This is the single decision point and abuse-prevention gate for dynamic issuance.
+   *
+   * Required to support dynamic issuance for the chained authorization server, presentation during
+   * issuance, or external authorization server flow.
+   */
+  public getDynamicIssuanceSession?: OpenId4VciGetDynamicIssuanceSession
+
+  public constructor(options: InternalOpenId4VcIssuerModuleConfigOptions) {
+    this.options = options
+    this.getVerificationSession =
+      options.getVerificationSession ?? options.getVerificationSessionForIssuanceSessionAuthorization
+    this.getChainedAuthorizationRequestParameters = options.getChainedAuthorizationRequestParameters
+    this.getDynamicIssuanceSession = options.getDynamicIssuanceSession
+  }
+
+  public get app() {
+    return this.options.app
+  }
+
+  public get baseUrl() {
+    return this.options.baseUrl
+  }
+
+  /**
+   * A function mapping a credential request to the credential to be issued.
+   */
+  public get credentialRequestToCredentialMapper() {
+    return this.options.credentialRequestToCredentialMapper
+  }
+
+  /**
+   * A function mapping a credential request to the credential to be issued.
+   */
+  public get deferredCredentialRequestToCredentialMapper() {
+    return this.options.deferredCredentialRequestToCredentialMapper
+  }
+
+  /**
+   * The time after which a cNone will expire.
+   *
+   * @default 60 (1 minute)
+   */
+  public get cNonceExpiresInSeconds(): number {
+    return this.options.cNonceExpiresInSeconds ?? DEFAULT_C_NONCE_EXPIRES_IN
+  }
+
+  /**
+   * The time after which a stateful credential offer not bound to a subject expires. Once the offer has been bound
+   * to a subject the access token expiration takes effect. This is to prevent long-lived `pre-authorized_code` and
+   * `issuer_state` values.
+   *
+   * @default 360 (5 minutes)
+   */
+  public get statefulCredentialOfferExpirationInSeconds(): number {
+    return this.options.statefulCredentialOfferExpirationInSeconds ?? DEFAULT_STATEFUL_CREDENTIAL_OFFER_EXPIRES_IN
+  }
+
+  /**
+   * For how long should the issuance session be kept alive after the deferral interval
+   * has passed. This is to allow for allow some time for the holder to recheck whether
+   * the credential is ready or not.
+   *
+   * @default 604800 (7 days)
+   */
+  public get deferralIntervalGracePeriodInSeconds(): number {
+    return this.options.deferralIntervalGracePeriodInSeconds ?? DEFAULT_DEFERRAL_INTERVAL_GRACE_PERIOD
+  }
+
+  /**
+   * The time after which a cNonce will expire.
+   *
+   * @default 60 (1 minute)
+   */
+  public get authorizationCodeExpiresInSeconds(): number {
+    return this.options.authorizationCodeExpiresInSeconds ?? DEFAULT_AUTHORIZATION_CODE_EXPIRES_IN
+  }
+
+  /**
+   * The time after which an access token will expire.
+   *
+   * @default 180 (3 minutes)
+   */
+  public get accessTokenExpiresInSeconds(): number {
+    return this.options.accessTokenExpiresInSeconds ?? DEFAULT_TOKEN_EXPIRES_IN
+  }
+
+  /**
+   * The time after which a refresh token will expire.
+   *
+   * @default 7776000 (90 days)
+   */
+  public get refreshTokenExpiresInSeconds(): number {
+    return this.options.refreshTokenExpiresInSeconds ?? DEFAULT_REFRESH_TOKEN_EXPIRES_IN
+  }
+
+  /**
+   * The time after which a pushed authorization request URI will expire.
+   *
+   * @default 60 (1 minute)
+   */
+  public get requestUriExpiresInSeconds(): number {
+    return this.options.requestUriExpiresInSeconds ?? DEFAULT_REQUEST_URI_EXPIRES_IN
+  }
+
+  /**
+   * Whether DPoP is required for all issuance sessions. This value can be overridden when creating
+   * a credential offer. If dpop is not required, but used by a client in the first request to credo,
+   * DPoP will be required going forward.
+   *
+   * @default false
+   */
+  public get dpopRequired(): boolean {
+    return this.options.dpopRequired ?? false
+  }
+
+  /**
+   * Whether wallet attestations are required for all issuance sessions. This value can be overridden when creating
+   * a credential offer, but will have effect for dynamic issuance sessions. If wallet attestations are not required
+   * but used by a client in the first request to credo,
+   * wallet attestations will be required going forward.
+   *
+   * @default false
+   */
+  public get walletAttestationsRequired(): boolean {
+    return this.options.walletAttestationsRequired ?? false
+  }
+
+  /**
+   * Whether to ignore wallet attestations that a client provides when they are not required for the issuance
+   * session.
+   *
+   * @default false
+   */
+  public get ignoreWalletAttestationsWhenNotRequired(): boolean {
+    return this.options.ignoreWalletAttestationsWhenNotRequired ?? false
+  }
+
+  /**
+   * Whether a Client Attestation PoP `challenge` is required when a client authenticates using a client
+   * attestation (draft 09 of OAuth 2.0 Attestation-Based Client Authentication).
+   *
+   * @default false
+   */
+  public get clientAttestationPopChallengeRequired(): boolean {
+    return this.options.clientAttestationPopChallengeRequired ?? false
+  }
+
+  /**
+   * Whether to allow dynamic issuance sessions based on a credential request.
+   *
+   * This requires an external authorization server which issues access tokens without
+   * a `pre-authorized_code` or `issuer_state` parameter.
+   *
+   * Credo only supports stateful credential offer sessions (pre-auth or presentation during issuance)
+   *
+   * @default false
+   *
+   * @deprecated
+   */
+  public get allowDynamicIssuanceSessions(): boolean {
+    return this.options.allowDynamicIssuanceSessions ?? false
+  }
+
+  /**
+   * @default /nonce
+   */
+  public get nonceEndpointPath(): string {
+    return this.options.endpoints?.nonce ?? '/nonce'
+  }
+
+  /**
+   * @default /par
+   */
+  public get pushedAuthorizationRequestEndpoint(): string {
+    return this.options.endpoints?.pushedAuthorizationRequest ?? '/par'
+  }
+
+  /**
+   * @default /authorize
+   */
+  public get authorizationEndpoint(): string {
+    return this.options.endpoints?.authorization ?? '/authorize'
+  }
+
+  /**
+   * @default /redirect
+   */
+  public get redirectEndpoint(): string {
+    return this.options.endpoints?.redirect ?? '/redirect'
+  }
+
+  /**
+   * @default /challenge
+   */
+  public get authorizationChallengeEndpointPath(): string {
+    return this.options.endpoints?.authorizationChallenge ?? '/challenge'
+  }
+
+  /**
+   * @default /client-attestation-challenge
+   */
+  public get clientAttestationChallengeEndpointPath(): string {
+    return this.options.endpoints?.clientAttestationChallenge ?? '/client-attestation-challenge'
+  }
+
+  /**
+   * @default /offers
+   */
+  public get credentialOfferEndpointPath(): string {
+    return this.options.endpoints?.credentialOffer ?? '/offers'
+  }
+
+  /**
+   * @default /credential
+   */
+  public get credentialEndpointPath(): string {
+    return this.options.endpoints?.credential ?? '/credential'
+  }
+
+  /**
+   * @default /deferred-credential
+   */
+  public get deferredCredentialEndpointPath(): string {
+    return this.options.endpoints?.deferredCredential ?? '/deferred-credential'
+  }
+
+  /**
+   * @default /token
+   */
+  public get accessTokenEndpointPath(): string {
+    return this.options.endpoints?.accessToken ?? '/token'
+  }
+
+  /**
+   * @default /jwks
+   */
+  public get jwksEndpointPath(): string {
+    return this.options.endpoints?.jwks ?? '/jwks'
+  }
+
+  /**
+   * @deprecated use `getVerificationSession` instead.
+   */
+  public get getVerificationSessionForIssuanceSessionAuthorization() {
+    return this.getVerificationSession
+  }
+
+  /**
+   * @deprecated use `getVerificationSession` instead.
+   */
+  public set getVerificationSessionForIssuanceSessionAuthorization(value:
+    | OpenId4VciGetVerificationSession
+    | undefined,) {
+    this.getVerificationSession = value
+  }
+}

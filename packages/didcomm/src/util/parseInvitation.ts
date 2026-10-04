@@ -1,0 +1,177 @@
+import type { AgentDependencies } from '@credo-ts/core'
+
+import { CredoError, JsonEncoder, JsonTransformer, MessageValidator } from '@credo-ts/core'
+import queryString from 'query-string'
+
+import { DidCommMessage } from '../DidCommMessage'
+import { DidCommConnectionInvitationMessage } from '../modules/connections/messages'
+import { convertToNewInvitation } from '../modules/oob/converters'
+import { OutOfBandDidCommService } from '../modules/oob/domain/OutOfBandDidCommService'
+import { DidCommInvitationType, DidCommOutOfBandInvitation } from '../modules/oob/messages'
+
+import { parseMessageType, supportsIncomingMessageType } from './messageType'
+
+const fetchShortUrl = async (invitationUrl: string, dependencies: AgentDependencies) => {
+  const abortController = new AbortController()
+  const id = setTimeout(() => abortController.abort(), 15000)
+  let response: Response
+  try {
+    response = await dependencies.fetch(invitationUrl, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+    })
+  } catch (error) {
+    throw new CredoError(`Get request failed on provided url: ${error.message}`, { cause: error })
+  }
+  clearTimeout(id)
+  return response
+}
+
+// Invitations are spec'd as base64url, but agents in the wild also emit padded base64url or standard base64
+const decodeInvitationJson = (encoded: string): Record<string, unknown> => {
+  try {
+    return JsonEncoder.fromBase64Url(encoded.replace(/=+$/, '')) as Record<string, unknown>
+  } catch (base64UrlError) {
+    try {
+      return JsonEncoder.fromBase64(encoded) as Record<string, unknown>
+    } catch {
+      throw new CredoError('Could not decode invitation data as base64url or base64 string.', {
+        cause: base64UrlError,
+      })
+    }
+  }
+}
+
+/**
+ * Parses a JSON containing an invitation message and returns an DidCommOutOfBandInvitation instance
+ *
+ * @param invitationJson JSON object containing message
+ * @returns DidCommOutOfBandInvitation
+ */
+export const parseInvitationJson = (invitationJson: Record<string, unknown>): DidCommOutOfBandInvitation => {
+  const messageType = invitationJson['@type'] as string
+
+  if (!messageType) {
+    throw new CredoError('Invitation is not a valid DIDComm message')
+  }
+
+  const parsedMessageType = parseMessageType(messageType)
+  if (supportsIncomingMessageType(parsedMessageType, DidCommOutOfBandInvitation.type)) {
+    const invitation = JsonTransformer.fromJSON(invitationJson, DidCommOutOfBandInvitation)
+    MessageValidator.validateSync(invitation)
+    invitation.invitationType = DidCommInvitationType.OutOfBand
+    return invitation
+  }
+  if (supportsIncomingMessageType(parsedMessageType, DidCommConnectionInvitationMessage.type)) {
+    const invitation = JsonTransformer.fromJSON(invitationJson, DidCommConnectionInvitationMessage)
+    MessageValidator.validateSync(invitation)
+    const outOfBandInvitation = convertToNewInvitation(invitation)
+    outOfBandInvitation.invitationType = DidCommInvitationType.Connection
+    return outOfBandInvitation
+  }
+  if (invitationJson['~service']) {
+    // This is probably a legacy connectionless invitation
+    return transformLegacyConnectionlessInvitationToOutOfBandInvitation(invitationJson)
+  }
+  throw new CredoError(`Invitation with '@type' ${parsedMessageType.messageTypeUri} not supported.`)
+}
+
+/**
+ * Parses URL containing encoded invitation and returns invitation message.
+ *
+ * @param invitationUrl URL containing encoded invitation
+ *
+ * @returns DidCommOutOfBandInvitation
+ */
+export const parseInvitationUrl = (invitationUrl: string): DidCommOutOfBandInvitation => {
+  const parsedUrl = queryString.parseUrl(invitationUrl).query
+
+  const encodedInvitation = parsedUrl.oob ?? parsedUrl.c_i ?? parsedUrl.d_m
+
+  if (typeof encodedInvitation === 'string') {
+    return parseInvitationJson(decodeInvitationJson(encodedInvitation))
+  }
+  throw new CredoError(
+    'InvitationUrl is invalid. It needs to contain one, and only one, of the following parameters: `oob`, `c_i` or `d_m`.'
+  )
+}
+
+// This currently does not follow the RFC because of issues with fetch, currently uses a janky work around
+export const oobInvitationFromShortUrl = async (response: Response): Promise<DidCommOutOfBandInvitation> => {
+  if (response) {
+    if (response.headers.get('Content-Type')?.startsWith('application/json') && response.ok) {
+      const invitationJson = (await response.json()) as Record<string, unknown>
+      return parseInvitationJson(invitationJson)
+    }
+    if (response.url) {
+      // The following if else is for here for trinsic shorten urls
+      // Because the redirect targets a deep link the automatic redirect does not occur
+      let responseUrl: string
+      const location = response.headers.get('Location')
+      if ((response.status === 302 || response.status === 301) && location) responseUrl = location
+      else responseUrl = response.url
+
+      return parseInvitationUrl(responseUrl)
+    }
+  }
+  throw new CredoError('HTTP request time out or did not receive valid response')
+}
+
+export function transformLegacyConnectionlessInvitationToOutOfBandInvitation(messageJson: Record<string, unknown>) {
+  const agentMessage = JsonTransformer.fromJSON(messageJson, DidCommMessage)
+
+  // ~service is required for legacy connectionless invitations
+  if (!agentMessage.service) {
+    throw new CredoError('Invalid legacy connectionless invitation url. Missing ~service decorator.')
+  }
+
+  // This destructuring removes the ~service property from the message, and
+  // we can can use messageWithoutService to create the out of band invitation
+  const { '~service': service, ...messageWithoutService } = messageJson
+
+  // transform into out of band invitation
+  const invitation = new DidCommOutOfBandInvitation({
+    services: [OutOfBandDidCommService.fromResolvedDidCommService(agentMessage.service.resolvedDidCommService)],
+  })
+
+  invitation.invitationType = DidCommInvitationType.Connectionless
+  invitation.addRequest(JsonTransformer.fromJSON(messageWithoutService, DidCommMessage))
+
+  return invitation
+}
+
+/**
+ * Parses URL containing encoded invitation and returns invitation message. Compatible with
+ * parsing short Urls
+ *
+ * @param invitationUrl URL containing encoded invitation
+ *
+ * @param dependencies Agent dependencies containing fetch
+ *
+ * @returns DidCommOutOfBandInvitation
+ */
+export const parseInvitationShortUrl = async (
+  invitationUrl: string,
+  dependencies: AgentDependencies
+): Promise<DidCommOutOfBandInvitation> => {
+  const parsedUrl = queryString.parseUrl(invitationUrl).query
+  if (parsedUrl.oob || parsedUrl.c_i) {
+    return parseInvitationUrl(invitationUrl)
+  }
+  // Legacy connectionless invitation
+  if (parsedUrl.d_m) {
+    return transformLegacyConnectionlessInvitationToOutOfBandInvitation(decodeInvitationJson(parsedUrl.d_m as string))
+  }
+  try {
+    const outOfBandInvitation = await oobInvitationFromShortUrl(await fetchShortUrl(invitationUrl, dependencies))
+    outOfBandInvitation.invitationType = DidCommInvitationType.OutOfBand
+    return outOfBandInvitation
+  } catch (_error) {
+    throw new CredoError(
+      'InvitationUrl is invalid. It needs to contain one, and only one, of the following parameters: `oob`, `c_i` or `d_m`, or be valid shortened URL'
+    )
+  }
+}

@@ -1,0 +1,418 @@
+# @credo-ts/drizzle-storage
+
+## 0.7.1
+
+### Patch Changes
+
+- d86e941: Allow selecting and persisting the KMS backend used for OpenID4VC issuer access-token signing keys. Key rotation defaults to the issuer's current backend, supports moving to another backend, and deletes the previous key through its owning backend. Existing issuers continue to use the default KMS backend.
+- bc4638e: Add support for the ISO/IEC TS 18013-7:2025 Annex C (`org-iso-mdoc`) Digital Credentials API.
+  
+  - KMS: HPKE (RFC 9180) key agreement algorithms `HPKE-0`, `HPKE-3` and `HPKE-7`, following the naming of draft-ietf-jose-hpke-encrypt. These are integrated-encryption algorithms, so `encryption`/`decryption` must be omitted and `encrypt` returns an `encapsulatedKey`. Implemented in the askar backend (the recipient private key stays inside askar; only the Diffie-Hellman output leaves it) and in the node backend.
+  - Mdoc module: `createDcApiVerificationSession` / `verifyDcApiResponse` for verifiers and `resolveDcApiRequest` / `createDcApiResponse` for wallets, backed by a new `MdocVerificationSessionRecord`.
+  - `verifyDcApiResponse` matches the response against the device request of the session and throws a `MdocDeviceRequestNotSatisfiedError` when a doc request is not satisfied. By default every requested element must be disclosed and issuer signed; in the `docRequests` passed to `createDcApiVerificationSession`, pass `{ intentToRetain, optional, source }` instead of the `intentToRetain` boolean to mark an element as optional or as device signed. The match is returned as `deviceRequestMatch`, with per doc request the valid and failed documents, and per document the result of the `docType` and `claims` checks.
+  - `resolveDcApiRequest` matches the stored mdocs with the same rules and returns the same structure (through `Holder.matchDeviceRequest` of `@owf/mdoc`): per doc request the `validCredentials` and `failedCredentials`, each with its `record` and the `docType` and `claims` checks, so a wallet can show an mdoc of the requested doctype together with the requested claims it is missing. An `age_over_NN` request is answered with the age attestation the mdoc has (18013-5 7.2.5). A requested element that is not issuer signed, but that the device key is authorized for in the MSO, is matched as device signed when its value is passed in `deviceNameSpaces` to `resolveDcApiRequest`: pass the same value in the `deviceNameSpaces` of the credential to `createDcApiResponse`. A credential can also pass `elements` to disclose only some of the requested elements.
+  - Reader authentication on an incoming request is resolved through the same trust layers as credential verification: the certificates passed to `resolveDcApiRequest`, then the global `getTrustedIssuersForVerification` callback (with the new `mdocReaderAuth` verification type, called per doc request), then the deprecated `getTrustedCertificatesForVerification` callback, then the statically configured trusted certificates. Resolving a reader authenticated request throws when none of these are configured. Return the leaf certificate from the callback to trust a reader on the certificate it presented itself.
+- 60efbe0: feat(openid4vc): support the Client Attestation PoP challenge and DPoP-bound method (draft 09 of OAuth 2.0 Attestation-Based Client Authentication)
+  
+  - The issuer can require a fresh, server-issued client attestation PoP `challenge` (enabled through the new `clientAttestationPopChallengeRequired` issuer config option). When enabled it advertises a `challenge_endpoint` and, at the token endpoint, uses the reactive `use_attestation_challenge` flow (returning the challenge in the `OAuth-Client-Attestation-Challenge` header) so clients retry automatically. The holder additionally fetches a challenge proactively from the `challenge_endpoint` for the pushed authorization request and authorization challenge endpoints.
+  - Support for the DPoP-bound client attestation method (`attest_jwt_client_auth_dpop`), where a single DPoP proof signed with the client instance key serves as both the DPoP proof and the client attestation PoP. Used automatically when the authorization server advertises it, in both the pre-authorized code flow and the authorization code flow. For the authorization code flow the whole interaction is bound to the client instance key: the authorization request commits the instance key as the DPoP key (`dpop_jkt`, with the issuer enforcing that the client attestation confirmation key matches the DPoP key), and the token endpoint uses the combined DPoP proof with that same key.
+  - The issuer now advertises the new `client_attestation_signing_alg_values_supported` / `client_attestation_pop_signing_alg_values_supported` metadata (configurable per issuer, stored as two nullable columns on the issuer record). Client attestation client authentication is advertised in `token_endpoint_auth_methods_supported` based on those signing algorithms being configured (matching how DPoP support is enabled via `dpop_signing_alg_values_supported`): `attest_jwt_client_auth` when the client attestation and pop signing algs are set, and the DPoP-bound `attest_jwt_client_auth_dpop` when the client attestation and DPoP signing algs are set.
+- cfe86fa: X509 trusted certificates now can be provided in a new format. Previously it was a list of base64/pem/der encoded certificates, but now you can _also_ provide a list of objects in the format `[{issuance: string[], status? :string[]}]`. This is used for the new status indicator on mdoc. First, it looks for the used `issuance` trusted certificates and then validates the `status`, if available, with the `status` trusted certificates associated with the `issuance` property.
+- 121dd14: feat(vc2): implement W3C Verifiable Credentials 2.0 support including JWT, SD-JWT, and Data Integrity proof formats
+- cfe86fa: TokenStatusList is a new standard module on the agent. It allows you to create/update/fetch token status lists. It is up to the user to host this, this can be easily done with the `statusList` you receive from the `agent.tokenStatusList.createTokenStatusList(...)` function. Updating the statuslist allows you to change the status list credential state from valid to invalid, but also update the expiry time, rotate certificates, change signing algorithm, etc. Signatures are the default and mac should only be used if the user is aware of the security implications and has good reason to do so.
+- Updated dependencies [d86e941]
+- Updated dependencies [9f4278b]
+- Updated dependencies [bd17194]
+- Updated dependencies [2fa6955]
+- Updated dependencies [f127ff5]
+- Updated dependencies [5cfcadb]
+- Updated dependencies [84dfcf4]
+- Updated dependencies [b75467c]
+- Updated dependencies [e80900a]
+- Updated dependencies [5f1c572]
+- Updated dependencies [8ded8d2]
+- Updated dependencies [fd5016d]
+- Updated dependencies [1d0c05d]
+- Updated dependencies [1a6562c]
+- Updated dependencies [117931c]
+- Updated dependencies [a5719ae]
+- Updated dependencies [e18d2cf]
+- Updated dependencies [d45aec0]
+- Updated dependencies [3f2bef1]
+- Updated dependencies [5cfcadb]
+- Updated dependencies [097c831]
+- Updated dependencies [20d6ab1]
+- Updated dependencies [ab90ba7]
+- Updated dependencies [bc4638e]
+- Updated dependencies [bc4638e]
+- Updated dependencies [bc4638e]
+- Updated dependencies [907f12f]
+- Updated dependencies [bc4638e]
+- Updated dependencies [96dc69b]
+- Updated dependencies [7dfafeb]
+- Updated dependencies [0c8138e]
+- Updated dependencies [60efbe0]
+- Updated dependencies [4f8bc6f]
+- Updated dependencies [bc4638e]
+- Updated dependencies [3a3eb03]
+- Updated dependencies [23c354e]
+- Updated dependencies [907cc54]
+- Updated dependencies [339f4cc]
+- Updated dependencies [9b64ef6]
+- Updated dependencies [bc4638e]
+- Updated dependencies [5cfcadb]
+- Updated dependencies [f127ff5]
+- Updated dependencies [cfe86fa]
+- Updated dependencies [e1ddb2e]
+- Updated dependencies [e97c18b]
+- Updated dependencies [9b64ef6]
+- Updated dependencies [121dd14]
+- Updated dependencies [b75467c]
+- Updated dependencies [e2871bb]
+- Updated dependencies [cfe86fa]
+- Updated dependencies [0a58888]
+- Updated dependencies [1e2088f]
+  - @credo-ts/openid4vc@0.7.1
+  - @credo-ts/core@0.7.1
+  - @credo-ts/anoncreds@0.7.1
+  - @credo-ts/didcomm@0.7.1
+  - @credo-ts/question-answer@0.7.1
+  - @credo-ts/action-menu@0.7.1
+  - @credo-ts/drpc@0.7.1
+  - @credo-ts/tenants@0.7.1
+
+## 0.7.0
+
+### Patch Changes
+
+- Updated dependencies [5056b97]
+- Updated dependencies [b75f0bf]
+- Updated dependencies [e0c829e]
+- Updated dependencies [120cee8]
+- Updated dependencies [a5d1dae]
+- Updated dependencies [944358e]
+- Updated dependencies [c1ab9be]
+- Updated dependencies [10a3ce5]
+- Updated dependencies [10a3ce5]
+- Updated dependencies [0bd4bd0]
+- Updated dependencies [cc65c27]
+- Updated dependencies [1a652e3]
+- Updated dependencies [b7aec4e]
+- Updated dependencies [366e9b7]
+  - @credo-ts/core@0.7.0
+  - @credo-ts/anoncreds@0.7.0
+  - @credo-ts/action-menu@0.7.0
+  - @credo-ts/openid4vc@0.7.0
+  - @credo-ts/didcomm@0.7.0
+  - @credo-ts/tenants@0.7.0
+  - @credo-ts/drpc@0.7.0
+  - @credo-ts/question-answer@0.7.0
+
+## 0.6.3
+
+### Patch Changes
+
+- 73d2d59: Introduced cursor-based pagination for Drizzle-backed storage with support for before and after cursors. This ensures stable ordering using (createdAt, id) and enables efficient bidirectional pagination for large number of records.
+- Updated dependencies [d7c08a1]
+- Updated dependencies [8f1b343]
+- Updated dependencies [e2cbb15]
+- Updated dependencies [73d2d59]
+- Updated dependencies [7a79b99]
+- Updated dependencies [55389c4]
+- Updated dependencies [7f24d03]
+- Updated dependencies [5358453]
+- Updated dependencies [020c864]
+  - @credo-ts/openid4vc@0.6.3
+  - @credo-ts/core@0.6.3
+  - @credo-ts/action-menu@0.6.3
+  - @credo-ts/anoncreds@0.6.3
+  - @credo-ts/didcomm@0.6.3
+  - @credo-ts/drpc@0.6.3
+  - @credo-ts/question-answer@0.6.3
+  - @credo-ts/tenants@0.6.3
+
+## 0.6.2
+
+### Patch Changes
+
+- 620bb38: feat: resolve, merge and store type metadata chain for SD-JWT VC
+- Updated dependencies [df82d40]
+- Updated dependencies [b9bd214]
+- Updated dependencies [69acbc3]
+- Updated dependencies [4a4473c]
+- Updated dependencies [2c15356]
+- Updated dependencies [4989dd9]
+- Updated dependencies [0f7171a]
+- Updated dependencies [e441cc1]
+- Updated dependencies [657ec73]
+- Updated dependencies [8f63ac3]
+- Updated dependencies [1969c67]
+- Updated dependencies [620bb38]
+- Updated dependencies [2073110]
+- Updated dependencies [620bb38]
+  - @credo-ts/openid4vc@0.6.2
+  - @credo-ts/core@0.6.2
+  - @credo-ts/action-menu@0.6.2
+  - @credo-ts/anoncreds@0.6.2
+  - @credo-ts/didcomm@0.6.2
+  - @credo-ts/drpc@0.6.2
+  - @credo-ts/question-answer@0.6.2
+  - @credo-ts/tenants@0.6.2
+
+## 0.6.1
+
+### Patch Changes
+
+- Updated dependencies [173ed6d]
+- Updated dependencies [8156e6e]
+- Updated dependencies [9f60e1b]
+- Updated dependencies [251cbe5]
+- Updated dependencies [8156e6e]
+- Updated dependencies [a27de81]
+  - @credo-ts/openid4vc@0.6.1
+  - @credo-ts/core@0.6.1
+  - @credo-ts/didcomm@0.6.1
+  - @credo-ts/action-menu@0.6.1
+  - @credo-ts/anoncreds@0.6.1
+  - @credo-ts/drpc@0.6.1
+  - @credo-ts/question-answer@0.6.1
+  - @credo-ts/tenants@0.6.1
+
+## 0.6.0
+
+### Minor Changes
+
+- cd6c836: Adds support for chained authorization code flows within the OpenID4VCI credential issuance. This means that external authorization servers can be leveraged to authenticate or identify the user. The access token from this external authorization server can be then used during the issuance process in order to, for example, fetch credential data from an external resource server.
+- 6cb8d27: feat: add support for new SQLite and PostgreSQL storage based on Drizzle.
+
+  The Drizzle Storage Module is an additional storage implementation for Credo which natively integrates with PostgreSQL and SQLite. It can be combined with Aries Askar as the KMS.
+
+  The Drizzle Storage Module does not introduce any breaking chnages to how the storage APIs works in Credo, and for new projects you only have to configure the Drizzle module to connect to your database.
+
+- 0500765: **BREAKING**: Refactored credential storage to support batch credentials with KMS key tracking
+
+  This is a significant change to how credentials are stored and accessed in Credo. The main user-facing changes are:
+
+  ### Credential Records now support multiple credential instances
+
+  All credential record types (`W3cCredentialRecord`, `W3cV2CredentialRecord`, `SdJwtVcRecord`, `MdocRecord`) now support storing multiple credential instances in a single record. This enables:
+
+  - Batch issuance workflows where multiple credentials are issued together
+  - Tracking which KMS key was used to sign each credential instance
+  - Better support for credential refresh and reissuance scenarios
+
+  ### API Changes
+
+  **Storing Credentials:**
+
+  - The `storeCredential()` method now expects a `record` parameter instead of a `credential` parameter
+  - You must create the record first using `W3cCredentialRecord.fromCredential()` or similar constructors. Store credential expecting a record allows the OpenID4VC module to already return the credential record with the linked kms keys. In the future the OpenID4VC display metadata will also be added to the record automatically.
+
+  ```typescript
+  // Before
+  await agent.w3cCredentials.storeCredential({ credential });
+
+  // After
+  const record = W3cCredentialRecord.fromCredential(credential);
+  await agent.w3cCredentials.store({ record });
+  ```
+
+  **Accessing Credentials:**
+
+  - Records now use `firstCredential` property to access the primary credential instead of `credential`
+  - Use `credentialInstances` array to access all instances in a batch record
+  - The `multiInstanceState` property tracks the state of credential instances:
+    - `SingleInstanceUnused`: Single instance that has never been used
+    - `SingleInstanceUsed`: Single instance that has been used at least once
+    - `MultiInstanceFirstUnused`: Credential was originally a multi instance credential, where the first instance is unused.
+    - `MultiInstanceFirstUsed`: Credential was originally a multi instance credential, where the first instance is used. It may still have other instances that are unused (which can be detected if the length of credentialInstances > 1)
+
+  ```typescript
+  // Before
+  const credential = record.credential;
+
+  // After
+  const credential = record.firstCredential;
+
+  // Check credential state
+  if (
+    record.multiInstanceState ===
+    CredentialMultiInstanceState.MultiInstanceLastUnused
+  ) {
+    // Has unused instances available
+  }
+  ```
+
+  ### KMS Key Tracking
+
+  Credential instances now track which KMS key was used to sign them:
+
+  - Each credential instance can have an associated `kmsKeyId`
+  - This enables key rotation and multi-tenant scenarios where different keys are used
+  - The KMS key ID is stored in the credential record and synced with credential metadata
+
+  ### Storage Service Updates
+
+  - Added `lockedUpdate()` method to storage services for atomic updates with record locking
+  - Prevents race conditions when updating records concurrently
+  - Throws error if trying to update a record that has been modified since it was loaded
+
+  ### Migration Notes
+
+  If you have custom code that:
+
+  - Stores credentials using `storeCredential()` - update to use the new `store()` API
+  - Accesses `record.credential` - update to use `record.firstCredential`
+  - Directly constructs credential records - ensure you use the proper constructors with `credentialInstances` array
+
+- bc6f0c7: Add support for ESM module syntax.
+
+  - Use `tsdown` to bundle for ESM -> tsdown is based on rust, so it should help with performance
+  - Update to `vitest` since jest doesn't work well with ESM -> this should also help with performance
+  - Simplify type checking -> just a single type check script instead of one for all packages. This should help with performance.
+
+  NOTE: Since React Native bundles your code, the update to ESM should not cause issues. In addition all latest minor releases of Node 20 and 22 now support requiring ESM modules. This means that even if you project is still a CommonJS project, it can now depend on ESM modules. For this reason Credo is now fully an ESM module.
+
+  Initially we added support for both CJS and ESM in parallel. However this caused issues with some libraries requiring the CJS output, and other the ESM output. Since Credo is only meant to be installed a single time for the dependency injection to work correctly, this resulted in unexpected behavior.
+
+### Patch Changes
+
+- 7fb0092: fix: throw RecordDuplicateError when record already exists in Drizzle storage
+- 645363d: feat: add support for creating and hosting signed credential issuer metadata
+- Updated dependencies [55318b2]
+- Updated dependencies [e936068]
+- Updated dependencies [43148b4]
+- Updated dependencies [8dc1156]
+- Updated dependencies [a888c97]
+- Updated dependencies [2d10ec3]
+- Updated dependencies [6d83136]
+- Updated dependencies [cd6c836]
+- Updated dependencies [312a7b2]
+- Updated dependencies [1495177]
+- Updated dependencies [1810764]
+- Updated dependencies [2cace9c]
+- Updated dependencies [66d3384]
+- Updated dependencies [879ed2c]
+- Updated dependencies [a64ada0]
+- Updated dependencies [8a816d8]
+- Updated dependencies [297d209]
+- Updated dependencies [2312bb8]
+- Updated dependencies [11827cc]
+- Updated dependencies [81dbbec]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [297d209]
+- Updated dependencies [652ade8]
+- Updated dependencies [0500765]
+- Updated dependencies [568cc13]
+- Updated dependencies [2cace9c]
+- Updated dependencies [bea846b]
+- Updated dependencies [13cd8cb]
+- Updated dependencies [6f3f621]
+- Updated dependencies [2cace9c]
+- Updated dependencies [15acc49]
+- Updated dependencies [df7580c]
+- Updated dependencies [95e9f32]
+- Updated dependencies [e936068]
+- Updated dependencies [16f109f]
+- Updated dependencies [7e6e8f0]
+- Updated dependencies [e936068]
+- Updated dependencies [617b523]
+- Updated dependencies [90caf61]
+- Updated dependencies [b5fc7a6]
+- Updated dependencies [1f74337]
+- Updated dependencies [589a16e]
+- Updated dependencies [e936068]
+- Updated dependencies [dca4fdf]
+- Updated dependencies [17ec6b8]
+- Updated dependencies [fccb5ab]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [14673b1]
+- Updated dependencies [0c274fe]
+- Updated dependencies [2cace9c]
+- Updated dependencies [607659a]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [fee0260]
+- Updated dependencies [44b1866]
+- Updated dependencies [5f08bc6]
+- Updated dependencies [27f971d]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [cacd8ee]
+- Updated dependencies [0d877f5]
+- Updated dependencies [e936068]
+- Updated dependencies [2d10ec3]
+- Updated dependencies [09ea6e3]
+- Updated dependencies [0500765]
+- Updated dependencies [1a4182e]
+- Updated dependencies [8be3d67]
+- Updated dependencies [a4f443b]
+- Updated dependencies [90caf61]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [e936068]
+- Updated dependencies [290ff19]
+- Updated dependencies [0500765]
+- Updated dependencies [8baa7d7]
+- Updated dependencies [17ec6b8]
+- Updated dependencies [decbcac]
+- Updated dependencies [c57cece]
+- Updated dependencies [9df09fa]
+- Updated dependencies [2cace9c]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [70c849d]
+- Updated dependencies [0c274fe]
+- Updated dependencies [8baa7d7]
+- Updated dependencies [897c834]
+- Updated dependencies [468e9b4]
+- Updated dependencies [cfc2ac4]
+- Updated dependencies [5ff7bba]
+- Updated dependencies [a53fc54]
+- Updated dependencies [81e3571]
+- Updated dependencies [9ef54ba]
+- Updated dependencies [a4bdf6d]
+- Updated dependencies [17ec6b8]
+- Updated dependencies [8533cd6]
+- Updated dependencies [e936068]
+- Updated dependencies [edd2edc]
+- Updated dependencies [e296877]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [428fadd]
+- Updated dependencies [1f74337]
+- Updated dependencies [494c499]
+- Updated dependencies [c5e2a21]
+- Updated dependencies [d59e889]
+- Updated dependencies [e936068]
+- Updated dependencies [11545ce]
+- Updated dependencies [645363d]
+- Updated dependencies [e80794b]
+- Updated dependencies [27f971d]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [645363d]
+- Updated dependencies [6b2a0fc]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [8baa7d7]
+- Updated dependencies [d06669c]
+- Updated dependencies [decbcac]
+- Updated dependencies [9befbcb]
+- Updated dependencies [6c8ab94]
+- Updated dependencies [bc6f0c7]
+- Updated dependencies [676af7f]
+- Updated dependencies [d9e04db]
+- Updated dependencies [d6086e9]
+- Updated dependencies [8be3d67]
+- Updated dependencies [ebdc7bb]
+- Updated dependencies [1f74337]
+- Updated dependencies [9f78a6e]
+- Updated dependencies [bd28bba]
+- Updated dependencies [885030a]
+- Updated dependencies [0d49804]
+- Updated dependencies [27f971d]
+  - @credo-ts/core@0.6.0
+  - @credo-ts/openid4vc@0.6.0
+  - @credo-ts/didcomm@0.6.0
+  - @credo-ts/tenants@0.6.0
+  - @credo-ts/drpc@0.6.0
+  - @credo-ts/question-answer@0.6.0
+  - @credo-ts/action-menu@0.6.0
+  - @credo-ts/anoncreds@0.6.0

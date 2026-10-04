@@ -1,0 +1,40 @@
+import type { DependencyManager } from '@credo-ts/core'
+import express from 'express'
+import { OpenId4VcVerifierModule } from '../OpenId4VcVerifierModule'
+import {
+  type InternalOpenId4VcVerifierModuleConfigOptions,
+  OpenId4VcVerifierModuleConfig,
+} from '../OpenId4VcVerifierModuleConfig'
+import { OpenId4VpVerifierService } from '../OpenId4VpVerifierService'
+import { OpenId4VcVerifierRepository } from '../repository'
+
+const dependencyManager = {
+  registerInstance: vi.fn(),
+  registerSingleton: vi.fn(),
+  registerContextScoped: vi.fn(),
+  resolve: vi.fn().mockReturnValue({ logger: { warn: vi.fn() } }),
+} as unknown as DependencyManager
+
+describe('OpenId4VcVerifierModule', () => {
+  test('registers dependencies on the dependency manager', () => {
+    const options = {
+      baseUrl: 'http://localhost:3000',
+      endpoints: {
+        authorization: '/hello',
+      },
+      app: express(),
+    } satisfies InternalOpenId4VcVerifierModuleConfigOptions
+    const openId4VcClientModule = new OpenId4VcVerifierModule(options)
+    openId4VcClientModule.register(dependencyManager)
+
+    expect(dependencyManager.registerInstance).toHaveBeenCalledTimes(1)
+    expect(dependencyManager.registerInstance).toHaveBeenCalledWith(
+      OpenId4VcVerifierModuleConfig,
+      new OpenId4VcVerifierModuleConfig(options)
+    )
+
+    expect(dependencyManager.registerSingleton).toHaveBeenCalledTimes(2)
+    expect(dependencyManager.registerSingleton).toHaveBeenCalledWith(OpenId4VpVerifierService)
+    expect(dependencyManager.registerSingleton).toHaveBeenCalledWith(OpenId4VcVerifierRepository)
+  })
+})

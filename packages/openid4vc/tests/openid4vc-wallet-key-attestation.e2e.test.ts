@@ -1,0 +1,1167 @@
+import type { KeyDidCreateOptions } from '@credo-ts/core'
+import { CredoError, DidKey, Kms, Mdoc, MdocRecord, SdJwtVcRecord, utils } from '@credo-ts/core'
+import type { AuthorizationServerMetadata, Jwk } from '@openid4vc/oauth2'
+import { AuthorizationFlow, Openid4vciWalletProvider } from '@openid4vc/openid4vci'
+import express, { type Express } from 'express'
+import { InMemoryWalletModule } from '../../../tests/InMemoryWalletModule'
+import { setupNockToExpress } from '../../../tests/nockToExpress'
+import {
+  OpenId4VcIssuanceSessionState,
+  OpenId4VcIssuerModuleConfig,
+  type OpenId4VcIssuerModuleConfigOptions,
+  OpenId4VcIssuerRecord,
+  OpenId4VcIssuerService,
+  type OpenId4VciCredentialConfigurationSupportedWithFormats,
+  OpenId4VciCredentialFormatProfile,
+  OpenId4VciHolderService,
+  OpenId4VciKeyAttestationLevel,
+  OpenId4VcModule,
+  type OpenId4VcVerifierModuleConfigOptions,
+} from '../src'
+import { getOid4vcCallbacks } from '../src/shared/callbacks'
+import type { AgentType } from './utils'
+import { createAgentFromModules, waitForCredentialIssuanceSessionRecordSubject } from './utils'
+
+const highLevels = [OpenId4VciKeyAttestationLevel.High]
+const moderateLevels = [OpenId4VciKeyAttestationLevel.Moderate]
+
+const universityDegreeCredentialConfigurationSupportedMdoc = {
+  format: OpenId4VciCredentialFormatProfile.MsoMdoc,
+  scope: 'UniversityDegreeCredential',
+  doctype: 'UniversityDegreeCredential',
+  proof_types_supported: {
+    jwt: {
+      proof_signing_alg_values_supported: ['ES256', 'EdDSA'],
+      key_attestations_required: {
+        key_storage: highLevels,
+        user_authentication: highLevels,
+      },
+    },
+    attestation: {
+      proof_signing_alg_values_supported: ['ES256', 'EdDSA'],
+      key_attestations_required: {
+        key_storage: highLevels,
+        user_authentication: highLevels,
+      },
+    },
+  },
+  cryptographic_binding_methods_supported: ['jwk'],
+} satisfies OpenId4VciCredentialConfigurationSupportedWithFormats
+
+// Only requires the `moderate` level, used to verify that a stronger attested level (`high`)
+// satisfies a weaker required level.
+const universityDegreeModerateCredentialConfigurationSupportedMdoc = {
+  format: OpenId4VciCredentialFormatProfile.MsoMdoc,
+  scope: 'UniversityDegreeCredentialModerate',
+  doctype: 'UniversityDegreeCredential',
+  proof_types_supported: {
+    jwt: {
+      proof_signing_alg_values_supported: ['ES256', 'EdDSA'],
+      key_attestations_required: {
+        key_storage: moderateLevels,
+        user_authentication: moderateLevels,
+      },
+    },
+    attestation: {
+      proof_signing_alg_values_supported: ['ES256', 'EdDSA'],
+      key_attestations_required: {
+        key_storage: moderateLevels,
+        user_authentication: moderateLevels,
+      },
+    },
+  },
+  cryptographic_binding_methods_supported: ['jwk'],
+} satisfies OpenId4VciCredentialConfigurationSupportedWithFormats
+
+const baseUrl = 'http://localhost:3991'
+const issuerBaseUrl = `${baseUrl}/oid4vci`
+const verifierBaseUrl = `${baseUrl}/oid4vp`
+const externalAuthorizationServerUrl = 'http://localhost:3992'
+let generateKeyAttestation: (
+  nonce?: string,
+  levels?: {
+    keyStorage: OpenId4VciKeyAttestationLevel[]
+    userAuthentication: OpenId4VciKeyAttestationLevel[]
+  }
+) => Promise<string>
+let generateDidKeyAttestation: () => Promise<string>
+let walletProviderDid: string
+
+describe('OpenId4Vc Wallet and Key Attestations', () => {
+  let expressApp: Express
+  let clearNock: () => void
+
+  let issuer: AgentType<{
+    openid4vc: OpenId4VcModule<OpenId4VcIssuerModuleConfigOptions, OpenId4VcVerifierModuleConfigOptions>
+  }>
+  let issuerRecord: OpenId4VcIssuerRecord
+
+  let holder: AgentType<{
+    openid4vc: OpenId4VcModule
+  }>
+
+  let attestedKeys: Kms.PublicJwk[]
+  let walletAttestationJwt: string
+  let walletInstanceKey: Kms.PublicJwk
+
+  beforeEach(async () => {
+    expressApp = express()
+
+    issuer = await createAgentFromModules(
+      {
+        openid4vc: new OpenId4VcModule({
+          app: expressApp,
+          issuer: {
+            baseUrl: issuerBaseUrl,
+            // Require a client attestation pop challenge (draft 09) for all client attestation based auth
+            clientAttestationPopChallengeRequired: true,
+            getVerificationSession: async ({ issuanceSession, scopes }) => {
+              if (scopes.includes(universityDegreeCredentialConfigurationSupportedMdoc.scope)) {
+                const createRequestReturn = await issuer.agent.openid4vc.verifier.createAuthorizationRequest({
+                  verifierId: issuanceSession.issuerId,
+                  requestSigner: {
+                    method: 'x5c',
+                    x5c: [issuer.certificate],
+                  },
+                  responseMode: 'direct_post.jwt',
+                  dcql: {
+                    query: {
+                      credentials: [
+                        {
+                          id: 'e498bd12-be8f-4884-8ffe-2704176b99be',
+                          format: 'vc+sd-jwt',
+                          claims: [
+                            {
+                              path: ['given_name'],
+                            },
+                            {
+                              path: ['family_name'],
+                            },
+                          ],
+                          meta: {
+                            vct_values: ['urn:eu.europa.ec.eudi:pid:1'],
+                          },
+                        },
+                      ],
+                    },
+                  },
+                })
+
+                return {
+                  ...createRequestReturn,
+                  scopes: [universityDegreeCredentialConfigurationSupportedMdoc.scope],
+                }
+              }
+
+              throw new Error('Unsupported scope values')
+            },
+            credentialRequestToCredentialMapper: async ({ holderBinding, credentialConfiguration }) => {
+              if (credentialConfiguration.format === OpenId4VciCredentialFormatProfile.MsoMdoc) {
+                if (holderBinding.bindingMethod !== 'jwk') {
+                  throw new CredoError('Expected jwk binding method')
+                }
+                expect(holderBinding.keyAttestation?.payload.attested_keys).toHaveLength(10)
+                expect(holderBinding.keyAttestation).toEqual({
+                  payload: {
+                    iat: expect.any(Number),
+                    exp: expect.any(Number),
+                    attested_keys: expect.any(Array),
+                    key_storage: ['iso_18045_high'],
+                    user_authentication: ['iso_18045_high'],
+                    nonce: holderBinding.keyAttestation?.payload.nonce,
+                  },
+                  header: {
+                    alg: 'ES256',
+                    typ: 'key-attestation+jwt',
+                    x5c: [expect.any(String)],
+                  },
+                  signer: {
+                    method: 'x5c',
+                    x5c: [expect.any(String)],
+                    alg: Kms.KnownJwaSignatureAlgorithms.ES256,
+                    publicJwk: expect.any(Object),
+                  },
+                })
+
+                return {
+                  type: 'credentials',
+                  format: OpenId4VciCredentialFormatProfile.MsoMdoc,
+                  credentials: holderBinding.keys.map((holderBinding, index) => ({
+                    docType: credentialConfiguration.doctype,
+                    holderKey: holderBinding.jwk,
+                    issuerCertificate: issuer.certificate,
+                    namespaces: {
+                      [credentialConfiguration.doctype]: {
+                        index,
+                      },
+                    },
+                    validityInfo: {
+                      validUntil: new Date('2050-01-01'),
+                    },
+                  })),
+                }
+              }
+
+              throw new Error('not supported')
+            },
+          },
+          verifier: {
+            baseUrl: verifierBaseUrl,
+          },
+        }),
+        inMemory: new InMemoryWalletModule({}),
+      },
+      undefined,
+      global.fetch
+    )
+
+    holder = await createAgentFromModules(
+      {
+        openid4vc: new OpenId4VcModule(),
+        inMemory: new InMemoryWalletModule({}),
+      },
+      undefined,
+      global.fetch
+    )
+
+    const walletProviderCertificate = await holder.agent.x509.createCertificate({
+      authorityKey: Kms.PublicJwk.fromPublicJwk(
+        (await holder.agent.kms.createKey({ type: { kty: 'EC', crv: 'P-256' } })).publicJwk
+      ),
+      issuer: {
+        commonName: 'Credo Wallet Provider',
+      },
+    })
+
+    const walletProvider = new Openid4vciWalletProvider({ callbacks: getOid4vcCallbacks(holder.agent.context) })
+    walletInstanceKey = Kms.PublicJwk.fromPublicJwk(
+      (await holder.agent.kms.createKey({ type: { kty: 'EC', crv: 'P-256' } })).publicJwk
+    )
+    walletAttestationJwt = await walletProvider.createWalletAttestationJwt({
+      clientId: 'wallet',
+      confirmation: {
+        jwk: walletInstanceKey.toJson() as Jwk,
+      },
+      issuer: 'https://wallet-provider.com',
+      signer: {
+        method: 'x5c',
+        alg: Kms.KnownJwaSignatureAlgorithms.ES256,
+        x5c: [walletProviderCertificate.toString('base64url')],
+        kid: walletProviderCertificate.publicJwk.keyId,
+      },
+      walletName: 'Credo Wallet',
+      walletLink: 'https://credo.js.org',
+      // 5 minutes
+      expiresAt: utils.addSecondsToDate(new Date(), 300),
+    })
+
+    attestedKeys = await Promise.all(
+      new Array(10)
+        .fill(0)
+        .map(async () =>
+          Kms.PublicJwk.fromPublicJwk(
+            (await holder.agent.kms.createKey({ type: { kty: 'EC', crv: 'P-256' } })).publicJwk
+          )
+        )
+    )
+
+    generateKeyAttestation = (nonce?: string, levels = { keyStorage: highLevels, userAuthentication: highLevels }) =>
+      walletProvider.createKeyAttestationJwt({
+        attestedKeys: attestedKeys.map((key) => key.toJson() as Jwk),
+        signer: {
+          method: 'x5c',
+          alg: Kms.KnownJwaSignatureAlgorithms.ES256,
+          x5c: [walletProviderCertificate.toString('base64url')],
+          kid: walletProviderCertificate.publicJwk.keyId,
+        },
+        use: 'proof_type.jwt',
+        keyStorage: levels.keyStorage,
+        userAuthentication: levels.userAuthentication,
+        // 5 minutes
+        expiresAt: utils.addSecondsToDate(new Date(), 300),
+        nonce,
+      })
+
+    const walletProviderKey = await holder.agent.kms.createKey({ type: { kty: 'OKP', crv: 'Ed25519' } })
+    const walletProviderDidResult = await holder.agent.dids.create<KeyDidCreateOptions>({
+      method: 'key',
+      options: { keyId: walletProviderKey.keyId },
+    })
+    walletProviderDid = walletProviderDidResult.didState.did as string
+
+    generateDidKeyAttestation = () =>
+      walletProvider.createKeyAttestationJwt({
+        attestedKeys: attestedKeys.map((key) => key.toJson() as Jwk),
+        signer: {
+          method: 'did',
+          alg: Kms.KnownJwaSignatureAlgorithms.EdDSA,
+          didUrl: `${walletProviderDid}#${DidKey.fromDid(walletProviderDid).publicJwk.fingerprint}`,
+          // `kid` is the kms key id used for signing, the did document jwk itself carries no key id
+          kid: walletProviderKey.keyId,
+        },
+        use: 'proof_type.jwt',
+        keyStorage: highLevels,
+        userAuthentication: highLevels,
+        // 5 minutes
+        expiresAt: utils.addSecondsToDate(new Date(), 300),
+      })
+
+    // Trust wallet provider
+    issuer.agent.x509.config.setTrustedCertificatesForVerification((_agentContext, { verification }) => {
+      if (verification.type === 'oauth2ClientAttestation' || verification.type === 'openId4VciKeyAttestation') {
+        return [walletProviderCertificate.toString('pem')]
+      }
+
+      // Use global trusted certificates
+      return undefined
+    })
+
+    // Pre-store identity credential
+    const holderIdentityCredential = await issuer.agent.sdJwtVc.sign({
+      issuer: {
+        method: 'x5c',
+        x5c: [issuer.certificate],
+        issuer: baseUrl,
+      },
+      payload: {
+        vct: 'urn:eu.europa.ec.eudi:pid:1',
+        given_name: 'Erika',
+        family_name: 'Powerstar',
+      },
+      disclosureFrame: {
+        _sd: ['given_name', 'family_name'],
+      },
+      holder: {
+        method: 'jwk',
+        jwk: holder.jwk,
+      },
+    })
+    await holder.agent.sdJwtVc.store({
+      record: new SdJwtVcRecord({
+        credentialInstances: [
+          {
+            compactSdJwtVc: holderIdentityCredential.compact,
+            kmsKeyId: holder.jwk.keyId,
+          },
+        ],
+      }),
+    })
+
+    holder.agent.x509.config.addTrustedCertificate(issuer.certificate)
+    issuer.agent.x509.config.addTrustedCertificate(issuer.certificate)
+
+    issuerRecord = await issuer.agent.openid4vc.issuer.createIssuer({
+      issuerId: '2f9c0385-7191-4c50-aa22-40cf5839d52b',
+      dpopSigningAlgValuesSupported: [Kms.KnownJwaSignatureAlgorithms.ES256],
+      clientAttestationSigningAlgValuesSupported: [
+        Kms.KnownJwaSignatureAlgorithms.ES256,
+        Kms.KnownJwaSignatureAlgorithms.EdDSA,
+      ],
+      clientAttestationPopSigningAlgValuesSupported: [
+        Kms.KnownJwaSignatureAlgorithms.ES256,
+        Kms.KnownJwaSignatureAlgorithms.EdDSA,
+      ],
+      batchCredentialIssuance: {
+        batchSize: 10,
+      },
+      credentialConfigurationsSupported: {
+        universityDegree: universityDegreeCredentialConfigurationSupportedMdoc,
+        universityDegreeModerate: universityDegreeModerateCredentialConfigurationSupportedMdoc,
+      },
+    })
+
+    await issuer.agent.openid4vc.verifier.createVerifier({
+      verifierId: issuerRecord.issuerId,
+    })
+
+    clearNock = setupNockToExpress(baseUrl, expressApp)
+  })
+
+  afterEach(async () => {
+    clearNock()
+    await issuer.agent.shutdown()
+
+    await holder.agent.shutdown()
+  })
+
+  it('e2e flow issuing a batch of mdoc based on wallet and key attestation', async () => {
+    // Create offer for university degree
+    const { issuanceSession, credentialOffer } = await issuer.agent.openid4vc.issuer.createCredentialOffer({
+      issuerId: issuerRecord.issuerId,
+      credentialConfigurationIds: ['universityDegree'],
+      preAuthorizedCodeFlowConfig: {},
+
+      // Require DPoP and wallet attestations
+      authorization: {
+        requireDpop: true,
+        requireWalletAttestation: true,
+      },
+    })
+
+    // Resolve offer
+    const resolvedCredentialOffer = await holder.agent.openid4vc.holder.resolveCredentialOffer(credentialOffer)
+
+    // Request access token
+    const tokenResponse = await holder.agent.openid4vc.holder.requestToken({
+      resolvedCredentialOffer,
+      walletAttestationJwt,
+      clientId: 'wallet',
+    })
+
+    // Request credentials
+    const credentialResponse = await holder.agent.openid4vc.holder.requestCredentials({
+      resolvedCredentialOffer,
+      ...tokenResponse,
+      credentialBindingResolver: async () => ({
+        method: 'attestation',
+        keyAttestationJwt: await generateKeyAttestation(),
+      }),
+    })
+
+    await waitForCredentialIssuanceSessionRecordSubject(issuer.replaySubject, {
+      state: OpenId4VcIssuanceSessionState.Completed,
+      issuanceSessionId: issuanceSession.id,
+    })
+
+    expect(credentialResponse.credentials).toHaveLength(1)
+    expect(credentialResponse.credentials[0].record.credentialInstances).toHaveLength(10)
+    const credentialRecord = credentialResponse.credentials[0].record
+
+    if (!(credentialRecord instanceof MdocRecord)) {
+      throw new Error('Expected mdoc record')
+    }
+
+    credentialRecord.credentialInstances.forEach((credential, credentialIndex) => {
+      expect(Mdoc.fromBase64Url(credential.issuerSignedBase64Url).deviceKey?.fingerprint).toEqual(
+        attestedKeys[credentialIndex].fingerprint
+      )
+    })
+  })
+
+  it('issues when the attested level is stronger than the required level (high satisfies moderate)', async () => {
+    // Offer only requires the `moderate` level
+    const { issuanceSession, credentialOffer } = await issuer.agent.openid4vc.issuer.createCredentialOffer({
+      issuerId: issuerRecord.issuerId,
+      credentialConfigurationIds: ['universityDegreeModerate'],
+      preAuthorizedCodeFlowConfig: {},
+      authorization: {
+        requireDpop: true,
+        requireWalletAttestation: true,
+      },
+    })
+
+    const resolvedCredentialOffer = await holder.agent.openid4vc.holder.resolveCredentialOffer(credentialOffer)
+    const tokenResponse = await holder.agent.openid4vc.holder.requestToken({
+      resolvedCredentialOffer,
+      walletAttestationJwt,
+      clientId: 'wallet',
+    })
+
+    // Wallet attests the stronger `high` level, which should satisfy the required `moderate` level
+    const credentialResponse = await holder.agent.openid4vc.holder.requestCredentials({
+      resolvedCredentialOffer,
+      ...tokenResponse,
+      credentialBindingResolver: async () => ({
+        method: 'attestation',
+        keyAttestationJwt: await generateKeyAttestation(undefined, {
+          keyStorage: highLevels,
+          userAuthentication: highLevels,
+        }),
+      }),
+    })
+
+    await waitForCredentialIssuanceSessionRecordSubject(issuer.replaySubject, {
+      state: OpenId4VcIssuanceSessionState.Completed,
+      issuanceSessionId: issuanceSession.id,
+    })
+
+    expect(credentialResponse.credentials).toHaveLength(1)
+    expect(credentialResponse.credentials[0].record.credentialInstances).toHaveLength(10)
+  })
+
+  it('throws error when the attested level is weaker than the required level (moderate does not satisfy high)', async () => {
+    // Offer requires the `high` level
+    const { credentialOffer } = await issuer.agent.openid4vc.issuer.createCredentialOffer({
+      issuerId: issuerRecord.issuerId,
+      credentialConfigurationIds: ['universityDegree'],
+      preAuthorizedCodeFlowConfig: {},
+      authorization: {
+        requireDpop: true,
+        requireWalletAttestation: true,
+      },
+    })
+
+    const resolvedCredentialOffer = await holder.agent.openid4vc.holder.resolveCredentialOffer(credentialOffer)
+    const tokenResponse = await holder.agent.openid4vc.holder.requestToken({
+      resolvedCredentialOffer,
+      walletAttestationJwt,
+      clientId: 'wallet',
+    })
+
+    // Wallet only attests the weaker `moderate` level, which does not satisfy the required `high` level
+    await expect(
+      holder.agent.openid4vc.holder.requestCredentials({
+        resolvedCredentialOffer,
+        ...tokenResponse,
+        credentialBindingResolver: async () => ({
+          method: 'attestation',
+          keyAttestationJwt: await generateKeyAttestation(undefined, {
+            keyStorage: moderateLevels,
+            userAuthentication: moderateLevels,
+          }),
+        }),
+      })
+    ).rejects.toThrow('Insufficient key_storage for key attestation')
+  })
+
+  it('throws error when the key attestation is signed by an untrusted did', async () => {
+    issuer.agent.context.config.setTrustedIssuersForVerification(async (_agentContext, { signer }) =>
+      // Keep using the x509 config for the x5c signed wallet attestation
+      signer.method === 'did'
+        ? {
+            trustedIssuers: [
+              { method: 'did', issuance: 'did:key:zUC74VEqqhEHQcgv4zagSPkqFJxuNWuoBPKjJuHETEUeHLoSqWt92viSsmaWjy82y' },
+            ],
+          }
+        : undefined
+    )
+
+    const { credentialOffer } = await issuer.agent.openid4vc.issuer.createCredentialOffer({
+      issuerId: issuerRecord.issuerId,
+      credentialConfigurationIds: ['universityDegree'],
+      preAuthorizedCodeFlowConfig: {},
+      authorization: {
+        requireDpop: true,
+        requireWalletAttestation: true,
+      },
+    })
+
+    const resolvedCredentialOffer = await holder.agent.openid4vc.holder.resolveCredentialOffer(credentialOffer)
+    const tokenResponse = await holder.agent.openid4vc.holder.requestToken({
+      resolvedCredentialOffer,
+      walletAttestationJwt,
+      clientId: 'wallet',
+    })
+
+    await expect(
+      holder.agent.openid4vc.holder.requestCredentials({
+        resolvedCredentialOffer,
+        ...tokenResponse,
+        credentialBindingResolver: async () => ({
+          method: 'attestation',
+          keyAttestationJwt: await generateDidKeyAttestation(),
+        }),
+      })
+    ).rejects.toThrow('Error verifying key attestation jwt')
+  })
+
+  it('e2e flow issuing a batch of mdoc based on wallet and nonce-bound key attestation', async () => {
+    // Create offer for university degree
+    const { issuanceSession, credentialOffer } = await issuer.agent.openid4vc.issuer.createCredentialOffer({
+      issuerId: issuerRecord.issuerId,
+      credentialConfigurationIds: ['universityDegree'],
+      preAuthorizedCodeFlowConfig: {},
+
+      // Require DPoP and wallet attestations
+      authorization: {
+        requireDpop: true,
+        requireWalletAttestation: true,
+      },
+    })
+
+    // Resolve offer
+    const resolvedCredentialOffer = await holder.agent.openid4vc.holder.resolveCredentialOffer(credentialOffer)
+
+    // Request access token
+    const tokenResponse = await holder.agent.openid4vc.holder.requestToken({
+      resolvedCredentialOffer,
+      walletAttestationJwt,
+      clientId: 'wallet',
+    })
+
+    // Request credentials
+    const credentialResponse = await holder.agent.openid4vc.holder.requestCredentials({
+      resolvedCredentialOffer,
+      ...tokenResponse,
+      credentialBindingResolver: async ({ cNonce }) => ({
+        method: 'attestation',
+        keyAttestationJwt: await generateKeyAttestation(cNonce),
+      }),
+    })
+
+    await waitForCredentialIssuanceSessionRecordSubject(issuer.replaySubject, {
+      state: OpenId4VcIssuanceSessionState.Completed,
+      issuanceSessionId: issuanceSession.id,
+    })
+
+    expect(credentialResponse.credentials).toHaveLength(1)
+    expect(credentialResponse.credentials[0].record.credentialInstances).toHaveLength(10)
+    const credentialRecord = credentialResponse.credentials[0].record
+
+    if (!(credentialRecord instanceof MdocRecord)) {
+      throw new Error('Expected mdoc record')
+    }
+
+    credentialRecord.credentialInstances.forEach((credential, credentialIndex) => {
+      expect(Mdoc.fromBase64Url(credential.issuerSignedBase64Url).deviceKey?.fingerprint).toEqual(
+        attestedKeys[credentialIndex].fingerprint
+      )
+    })
+  })
+
+  it('e2e flow with presentation during issuance, issuing a batch of mdoc based on wallet and key attestation', async () => {
+    // Create offer for university degree
+    const { issuanceSession, credentialOffer } = await issuer.agent.openid4vc.issuer.createCredentialOffer({
+      issuerId: issuerRecord.issuerId,
+      credentialConfigurationIds: ['universityDegree'],
+      authorizationCodeFlowConfig: {
+        requirePresentationDuringIssuance: true,
+      },
+
+      // Require DPoP and wallet attestations
+      authorization: {
+        requireDpop: true,
+        requireWalletAttestation: true,
+      },
+    })
+
+    // Resolve offer
+    const resolvedCredentialOffer = await holder.agent.openid4vc.holder.resolveCredentialOffer(credentialOffer)
+
+    const resolvedAuthorizationRequest = await holder.agent.openid4vc.holder.resolveOpenId4VciAuthorizationRequest(
+      resolvedCredentialOffer,
+      {
+        clientId: 'wallet',
+        redirectUri: 'http://localhost/callback',
+        walletAttestationJwt,
+      }
+    )
+
+    if (resolvedAuthorizationRequest.authorizationFlow !== AuthorizationFlow.PresentationDuringIssuance) {
+      throw new Error('expected presentation during issuance')
+    }
+
+    const resolvedPresentationRequest = await holder.agent.openid4vc.holder.resolveOpenId4VpAuthorizationRequest(
+      resolvedAuthorizationRequest.openid4vpRequestUrl
+    )
+    if (!resolvedPresentationRequest.dcql) {
+      throw new Error('Missing dcql')
+    }
+
+    // Submit presentation
+    const selectedCredentials = holder.agent.openid4vc.holder.selectCredentialsForDcqlRequest(
+      resolvedPresentationRequest.dcql.queryResult
+    )
+    const openId4VpResult = await holder.agent.openid4vc.holder.acceptOpenId4VpAuthorizationRequest({
+      authorizationRequestPayload: resolvedPresentationRequest.authorizationRequestPayload,
+      dcql: {
+        credentials: selectedCredentials,
+      },
+    })
+    if (!openId4VpResult.ok) {
+      throw new Error('not ok')
+    }
+
+    // Request authorization code
+    const { authorizationCode, dpop } = await holder.agent.openid4vc.holder.retrieveAuthorizationCodeUsingPresentation({
+      authSession: resolvedAuthorizationRequest.authSession,
+      resolvedCredentialOffer,
+      presentationDuringIssuanceSession: openId4VpResult.presentationDuringIssuanceSession,
+      dpop: resolvedAuthorizationRequest.dpop,
+
+      // TODO: should we dynamically retrieve the wallet attestation JWT based on a callback?
+      walletAttestationJwt,
+    })
+
+    // Request access token
+    const tokenResponse = await holder.agent.openid4vc.holder.requestToken({
+      resolvedCredentialOffer,
+      code: authorizationCode,
+      dpop,
+      walletAttestationJwt,
+      clientId: 'wallet',
+    })
+
+    // In the authorization-code flow the DPoP-bound method binds the whole interaction (PAR -> token) to
+    // the client instance key: the access token is bound to the wallet attestation's `cnf.jwk`.
+    expect(tokenResponse.dpop?.jwk.fingerprint).toEqual(walletInstanceKey.fingerprint)
+
+    // Request credentials
+    const credentialResponse = await holder.agent.openid4vc.holder.requestCredentials({
+      resolvedCredentialOffer,
+      clientId: 'wallet',
+      ...tokenResponse,
+      credentialBindingResolver: async () => ({
+        method: 'attestation',
+        keyAttestationJwt: await generateKeyAttestation(),
+      }),
+    })
+
+    await waitForCredentialIssuanceSessionRecordSubject(issuer.replaySubject, {
+      state: OpenId4VcIssuanceSessionState.Completed,
+      issuanceSessionId: issuanceSession.id,
+    })
+
+    expect(credentialResponse.credentials).toHaveLength(1)
+    expect(credentialResponse.credentials[0].record.credentialInstances).toHaveLength(10)
+  })
+
+  it('e2e flow with presentation during issuance where the DPoP key differs from the client attestation confirmation key', async () => {
+    // Create offer for university degree
+    const { issuanceSession, credentialOffer } = await issuer.agent.openid4vc.issuer.createCredentialOffer({
+      issuerId: issuerRecord.issuerId,
+      credentialConfigurationIds: ['universityDegree'],
+      authorizationCodeFlowConfig: {
+        requirePresentationDuringIssuance: true,
+      },
+
+      // Require DPoP and wallet attestations
+      authorization: {
+        requireDpop: true,
+        requireWalletAttestation: true,
+      },
+    })
+
+    // Resolve offer
+    const resolvedCredentialOffer = await holder.agent.openid4vc.holder.resolveCredentialOffer(credentialOffer)
+
+    // Force the standard `attest_jwt_client_auth` method with a DPoP key that is NOT the client instance key.
+    // Per draft §7.2 the DPoP proof must then be verified per RFC 9449 independently of the client attestation,
+    // so the issuer must not require it to match the attestation's `cnf.jwk`.
+    const holderService = holder.agent.dependencyManager.resolve(OpenId4VciHolderService)
+    // biome-ignore lint/suspicious/noExplicitAny: spying on a private method
+    vi.spyOn(holderService as any, 'getDpopBoundClientAttestationKey').mockReturnValue(undefined)
+
+    const resolvedAuthorizationRequest = await holder.agent.openid4vc.holder.resolveOpenId4VciAuthorizationRequest(
+      resolvedCredentialOffer,
+      {
+        clientId: 'wallet',
+        redirectUri: 'http://localhost/callback',
+        walletAttestationJwt,
+      }
+    )
+
+    expect(resolvedAuthorizationRequest.dpop?.jwk.fingerprint).not.toEqual(walletInstanceKey.fingerprint)
+
+    if (resolvedAuthorizationRequest.authorizationFlow !== AuthorizationFlow.PresentationDuringIssuance) {
+      throw new Error('expected presentation during issuance')
+    }
+
+    const resolvedPresentationRequest = await holder.agent.openid4vc.holder.resolveOpenId4VpAuthorizationRequest(
+      resolvedAuthorizationRequest.openid4vpRequestUrl
+    )
+    if (!resolvedPresentationRequest.dcql) {
+      throw new Error('Missing dcql')
+    }
+
+    // Submit presentation
+    const selectedCredentials = holder.agent.openid4vc.holder.selectCredentialsForDcqlRequest(
+      resolvedPresentationRequest.dcql.queryResult
+    )
+    const openId4VpResult = await holder.agent.openid4vc.holder.acceptOpenId4VpAuthorizationRequest({
+      authorizationRequestPayload: resolvedPresentationRequest.authorizationRequestPayload,
+      dcql: {
+        credentials: selectedCredentials,
+      },
+    })
+    if (!openId4VpResult.ok) {
+      throw new Error('not ok')
+    }
+
+    // Request authorization code
+    const { authorizationCode, dpop } = await holder.agent.openid4vc.holder.retrieveAuthorizationCodeUsingPresentation({
+      authSession: resolvedAuthorizationRequest.authSession,
+      resolvedCredentialOffer,
+      presentationDuringIssuanceSession: openId4VpResult.presentationDuringIssuanceSession,
+      dpop: resolvedAuthorizationRequest.dpop,
+      walletAttestationJwt,
+    })
+
+    // Request access token
+    const tokenResponse = await holder.agent.openid4vc.holder.requestToken({
+      resolvedCredentialOffer,
+      code: authorizationCode,
+      dpop,
+      walletAttestationJwt,
+      clientId: 'wallet',
+    })
+
+    // The access token is bound to the separate DPoP key, not to the wallet attestation `cnf.jwk`.
+    expect(tokenResponse.dpop?.jwk.fingerprint).toEqual(resolvedAuthorizationRequest.dpop?.jwk.fingerprint)
+
+    // Request credentials
+    const credentialResponse = await holder.agent.openid4vc.holder.requestCredentials({
+      resolvedCredentialOffer,
+      clientId: 'wallet',
+      ...tokenResponse,
+      credentialBindingResolver: async () => ({
+        method: 'attestation',
+        keyAttestationJwt: await generateKeyAttestation(),
+      }),
+    })
+
+    await waitForCredentialIssuanceSessionRecordSubject(issuer.replaySubject, {
+      state: OpenId4VcIssuanceSessionState.Completed,
+      issuanceSessionId: issuanceSession.id,
+    })
+
+    expect(credentialResponse.credentials).toHaveLength(1)
+  })
+
+  it('pushed authorization request accepts a DPoP key that differs from the client attestation confirmation key', async () => {
+    // Minimal external authorization server. The client attestation and DPoP verification in the pushed
+    // authorization request happens before any interaction with it, and building the authorization request
+    // url does not require any further requests, so only the metadata endpoint is needed.
+    const idpApp = express()
+    idpApp.get('/.well-known/oauth-authorization-server', (_req, res) =>
+      res.json({
+        issuer: externalAuthorizationServerUrl,
+        token_endpoint: `${externalAuthorizationServerUrl}/token`,
+        authorization_endpoint: `${externalAuthorizationServerUrl}/authorize`,
+      } satisfies AuthorizationServerMetadata)
+    )
+    const clearIdpNock = setupNockToExpress(externalAuthorizationServerUrl, idpApp)
+
+    try {
+      const chainedIssuerRecord = await issuer.agent.openid4vc.issuer.createIssuer({
+        issuerId: 'f8b7b4c4-6a3e-4a19-9c6a-1d0c5f2b1e34',
+        dpopSigningAlgValuesSupported: [Kms.KnownJwaSignatureAlgorithms.ES256],
+        clientAttestationSigningAlgValuesSupported: [Kms.KnownJwaSignatureAlgorithms.ES256],
+        clientAttestationPopSigningAlgValuesSupported: [Kms.KnownJwaSignatureAlgorithms.ES256],
+        credentialConfigurationsSupported: {
+          universityDegree: universityDegreeCredentialConfigurationSupportedMdoc,
+        },
+        authorizationServerConfigs: [
+          {
+            type: 'chained',
+            issuer: externalAuthorizationServerUrl,
+            clientAuthentication: {
+              type: 'clientSecret',
+              clientId: 'issuer-client-id',
+              clientSecret: 'issuer-client-secret',
+            },
+            scopesMapping: {
+              [universityDegreeCredentialConfigurationSupportedMdoc.scope]: ['MappedUniversityDegreeCredential'],
+            },
+          },
+        ],
+      })
+
+      const { credentialOffer } = await issuer.agent.openid4vc.issuer.createCredentialOffer({
+        issuerId: chainedIssuerRecord.issuerId,
+        credentialConfigurationIds: ['universityDegree'],
+        authorizationCodeFlowConfig: {
+          authorizationServerUrl: externalAuthorizationServerUrl,
+          issuerState: utils.uuid(),
+        },
+
+        // Require DPoP and wallet attestations
+        authorization: {
+          requireDpop: true,
+          requireWalletAttestation: true,
+        },
+      })
+
+      const resolvedCredentialOffer = await holder.agent.openid4vc.holder.resolveCredentialOffer(credentialOffer)
+
+      // Force the standard `attest_jwt_client_auth` method with a DPoP key that is NOT the client instance key.
+      const holderService = holder.agent.dependencyManager.resolve(OpenId4VciHolderService)
+      // biome-ignore lint/suspicious/noExplicitAny: spying on a private method
+      vi.spyOn(holderService as any, 'getDpopBoundClientAttestationKey').mockReturnValue(undefined)
+
+      const resolvedAuthorizationRequest = await holder.agent.openid4vc.holder.resolveOpenId4VciAuthorizationRequest(
+        resolvedCredentialOffer,
+        {
+          clientId: 'wallet',
+          redirectUri: 'http://localhost/callback',
+          scope: [universityDegreeCredentialConfigurationSupportedMdoc.scope],
+          walletAttestationJwt,
+        }
+      )
+
+      expect(resolvedAuthorizationRequest.authorizationFlow).toEqual(AuthorizationFlow.Oauth2Redirect)
+      expect(resolvedAuthorizationRequest.dpop?.jwk.fingerprint).not.toEqual(walletInstanceKey.fingerprint)
+    } finally {
+      clearIdpNock()
+    }
+  })
+
+  it('throws error if wallet attestation required but not provided', async () => {
+    // Create offer for university degree
+    const { credentialOffer } = await issuer.agent.openid4vc.issuer.createCredentialOffer({
+      issuerId: issuerRecord.issuerId,
+      credentialConfigurationIds: ['universityDegree'],
+      authorizationCodeFlowConfig: {
+        requirePresentationDuringIssuance: true,
+      },
+      preAuthorizedCodeFlowConfig: {},
+
+      // Require DPoP and wallet attestations
+      authorization: {
+        requireDpop: true,
+        requireWalletAttestation: true,
+      },
+    })
+
+    // Resolve offer
+    const resolvedCredentialOffer = await holder.agent.openid4vc.holder.resolveCredentialOffer(credentialOffer)
+
+    await expect(
+      holder.agent.openid4vc.holder.resolveOpenId4VciAuthorizationRequest(resolvedCredentialOffer, {
+        clientId: 'wallet',
+        redirectUri: 'http://localhost/callback',
+      })
+    ).rejects.toThrow('Missing required client attestation parameters in pushed authorization request')
+
+    // Request pre-auth access token
+    await expect(
+      holder.agent.openid4vc.holder.requestToken({
+        resolvedCredentialOffer,
+        clientId: 'wallet',
+      })
+    ).rejects.toThrow('Missing required client attestation parameters in access token request')
+
+    const resolvedAuthorizationRequest = await holder.agent.openid4vc.holder.resolveOpenId4VciAuthorizationRequest(
+      resolvedCredentialOffer,
+      {
+        clientId: 'wallet',
+        redirectUri: 'http://localhost/callback',
+        walletAttestationJwt,
+      }
+    )
+
+    if (resolvedAuthorizationRequest.authorizationFlow !== AuthorizationFlow.PresentationDuringIssuance) {
+      throw new Error('expected presentation during issuance')
+    }
+
+    const resolvedPresentationRequest = await holder.agent.openid4vc.holder.resolveOpenId4VpAuthorizationRequest(
+      resolvedAuthorizationRequest.openid4vpRequestUrl
+    )
+    if (!resolvedPresentationRequest.dcql) {
+      throw new Error('Missing dcql')
+    }
+
+    // Submit presentation
+    const selectedCredentials = holder.agent.openid4vc.holder.selectCredentialsForDcqlRequest(
+      resolvedPresentationRequest.dcql.queryResult
+    )
+    const openId4VpResult = await holder.agent.openid4vc.holder.acceptOpenId4VpAuthorizationRequest({
+      authorizationRequestPayload: resolvedPresentationRequest.authorizationRequestPayload,
+      dcql: {
+        credentials: selectedCredentials,
+      },
+    })
+    if (!openId4VpResult.ok) {
+      throw new Error('not ok')
+    }
+
+    await expect(
+      holder.agent.openid4vc.holder.retrieveAuthorizationCodeUsingPresentation({
+        authSession: resolvedAuthorizationRequest.authSession,
+        resolvedCredentialOffer,
+        presentationDuringIssuanceSession: openId4VpResult.presentationDuringIssuanceSession,
+        dpop: resolvedAuthorizationRequest.dpop,
+      })
+    ).rejects.toThrow('Missing required client attestation parameters in pushed authorization request')
+
+    // Request authorization code
+    const { authorizationCode, dpop } = await holder.agent.openid4vc.holder.retrieveAuthorizationCodeUsingPresentation({
+      authSession: resolvedAuthorizationRequest.authSession,
+      resolvedCredentialOffer,
+      presentationDuringIssuanceSession: openId4VpResult.presentationDuringIssuanceSession,
+      dpop: resolvedAuthorizationRequest.dpop,
+
+      // TODO: should we dynamically retrieve the wallet attestation JWT based on a callback?
+      walletAttestationJwt,
+    })
+
+    await expect(
+      holder.agent.openid4vc.holder.requestToken({
+        resolvedCredentialOffer,
+        code: authorizationCode,
+        dpop,
+        clientId: 'wallet',
+      })
+    ).rejects.toThrow('Missing required client attestation parameters in access token request')
+
+    // Request access token
+    await expect(
+      holder.agent.openid4vc.holder.requestToken({
+        resolvedCredentialOffer,
+        code: authorizationCode,
+        dpop,
+        walletAttestationJwt,
+        clientId: 'wallet',
+      })
+    ).resolves.toMatchObject({
+      accessToken: expect.any(String),
+    })
+  })
+
+  it('throws error if key attestation required but not provided', async () => {
+    // Create offer for university degree
+    const { credentialOffer } = await issuer.agent.openid4vc.issuer.createCredentialOffer({
+      issuerId: issuerRecord.issuerId,
+      credentialConfigurationIds: ['universityDegree'],
+      preAuthorizedCodeFlowConfig: {},
+
+      // Require DPoP and wallet attestations
+      authorization: {
+        requireDpop: true,
+        requireWalletAttestation: false,
+      },
+    })
+
+    // Resolve offer
+    const resolvedCredentialOffer = await holder.agent.openid4vc.holder.resolveCredentialOffer(credentialOffer)
+
+    // Request access token
+    const tokenResponse = await holder.agent.openid4vc.holder.requestToken({
+      resolvedCredentialOffer,
+      clientId: 'wallet',
+    })
+
+    // Request credentials (client error)
+    await expect(
+      holder.agent.openid4vc.holder.requestCredentials({
+        resolvedCredentialOffer,
+        ...tokenResponse,
+        credentialBindingResolver: () => ({
+          method: 'jwk',
+          keys: attestedKeys,
+        }),
+      })
+    ).rejects.toThrow(
+      // NOTE: this is a client error
+      `Credential binding returned list of JWK keys, but credential configuration 'universityDegree' requires key attestations. Return a key attestation with binding method 'attestation'`
+    )
+
+    // Modify metadata to avoid client error
+    const credentialConfigurationId = Object.keys(resolvedCredentialOffer.offeredCredentialConfigurations)[0]
+    const proofsTypesSupported =
+      resolvedCredentialOffer.metadata.credentialIssuer.credential_configurations_supported[credentialConfigurationId]
+        .proof_types_supported
+    if (proofsTypesSupported?.jwt) {
+      proofsTypesSupported.jwt.key_attestations_required = undefined
+    }
+
+    // Request credentials (server error)
+    await expect(
+      holder.agent.openid4vc.holder.requestCredentials({
+        resolvedCredentialOffer,
+        ...tokenResponse,
+        credentialBindingResolver: () => ({
+          method: 'jwk',
+          keys: attestedKeys,
+        }),
+      })
+    ).rejects.toThrow(
+      `Missing required key attestation. Key attestations are required for proof type 'jwt' in credential configuration 'universityDegree'`
+    )
+  })
+
+  it('advertises the client attestation pop challenge endpoint in the authorization server metadata', async () => {
+    const { credentialOffer } = await issuer.agent.openid4vc.issuer.createCredentialOffer({
+      issuerId: issuerRecord.issuerId,
+      credentialConfigurationIds: ['universityDegree'],
+      preAuthorizedCodeFlowConfig: {},
+      authorization: {
+        requireDpop: true,
+        requireWalletAttestation: true,
+      },
+    })
+
+    const resolvedCredentialOffer = await holder.agent.openid4vc.holder.resolveCredentialOffer(credentialOffer)
+    const authorizationServerMetadata = resolvedCredentialOffer.metadata.authorizationServers[0]
+
+    expect(authorizationServerMetadata.challenge_endpoint).toEqual(
+      `${issuerBaseUrl}/${issuerRecord.issuerId}/client-attestation-challenge`
+    )
+    // Both methods are advertised because the client attestation, pop and dpop signing algs are set.
+    expect(authorizationServerMetadata.token_endpoint_auth_methods_supported).toEqual(
+      expect.arrayContaining(['attest_jwt_client_auth', 'attest_jwt_client_auth_dpop'])
+    )
+    expect(authorizationServerMetadata.client_attestation_signing_alg_values_supported).toEqual(['ES256', 'EdDSA'])
+    expect(authorizationServerMetadata.client_attestation_pop_signing_alg_values_supported).toEqual(['ES256', 'EdDSA'])
+  })
+
+  it('uses the DPoP-bound client attestation method (attest_jwt_client_auth_dpop) in the pre-authorized flow', async () => {
+    const { credentialOffer } = await issuer.agent.openid4vc.issuer.createCredentialOffer({
+      issuerId: issuerRecord.issuerId,
+      credentialConfigurationIds: ['universityDegree'],
+      preAuthorizedCodeFlowConfig: {},
+      authorization: {
+        requireDpop: true,
+        requireWalletAttestation: true,
+      },
+    })
+
+    const resolvedCredentialOffer = await holder.agent.openid4vc.holder.resolveCredentialOffer(credentialOffer)
+    const tokenResponse = await holder.agent.openid4vc.holder.requestToken({
+      resolvedCredentialOffer,
+      walletAttestationJwt,
+      clientId: 'wallet',
+    })
+
+    // In the DPoP-bound method the single DPoP proof is signed with the client instance key
+    // (the `cnf.jwk` of the wallet attestation), so the access token is bound to that key.
+    expect(tokenResponse.accessToken).toEqual(expect.any(String))
+    expect(tokenResponse.dpop?.jwk.fingerprint).toEqual(walletInstanceKey.fingerprint)
+  })
+
+  it('throws error if the client attestation pop challenge is invalid', async () => {
+    const { credentialOffer } = await issuer.agent.openid4vc.issuer.createCredentialOffer({
+      issuerId: issuerRecord.issuerId,
+      credentialConfigurationIds: ['universityDegree'],
+      preAuthorizedCodeFlowConfig: {},
+      authorization: {
+        requireDpop: true,
+        requireWalletAttestation: true,
+      },
+    })
+
+    const resolvedCredentialOffer = await holder.agent.openid4vc.holder.resolveCredentialOffer(credentialOffer)
+
+    // The holder fetches and includes a valid challenge, but the issuer rejects it (e.g. expired/tampered)
+    const issuerService = issuer.agent.dependencyManager.resolve(OpenId4VcIssuerService)
+    vi.spyOn(issuerService, 'verifyClientAttestationChallenge').mockRejectedValue(new Error('Invalid challenge'))
+
+    await expect(
+      holder.agent.openid4vc.holder.requestToken({
+        resolvedCredentialOffer,
+        walletAttestationJwt,
+        clientId: 'wallet',
+      })
+    ).rejects.toThrow()
+  })
+
+  it('only ignores an invalid wallet attestation that is not required when ignoreWalletAttestationsWhenNotRequired is enabled', async () => {
+    const [header, payload, signature] = walletAttestationJwt.split('.')
+    const invalidWalletAttestationJwt = `${header}.${payload}.${signature.slice(0, -4)}${signature.endsWith('AAAA') ? 'BBBB' : 'AAAA'}`
+
+    const requestToken = async (requireWalletAttestation: boolean) => {
+      const { credentialOffer } = await issuer.agent.openid4vc.issuer.createCredentialOffer({
+        issuerId: issuerRecord.issuerId,
+        credentialConfigurationIds: ['universityDegree'],
+        preAuthorizedCodeFlowConfig: {},
+        authorization: { requireWalletAttestation, requireDpop: false },
+      })
+      const resolvedCredentialOffer = await holder.agent.openid4vc.holder.resolveCredentialOffer(credentialOffer)
+
+      return holder.agent.openid4vc.holder.requestToken({
+        resolvedCredentialOffer,
+        walletAttestationJwt: invalidWalletAttestationJwt,
+        clientId: 'wallet',
+      })
+    }
+
+    // By default a provided wallet attestation is always verified
+    await expect(requestToken(false)).rejects.toThrow('Error verifying client attestation')
+
+    const issuerConfig = issuer.agent.dependencyManager.resolve(OpenId4VcIssuerModuleConfig)
+    vi.spyOn(issuerConfig, 'ignoreWalletAttestationsWhenNotRequired', 'get').mockReturnValue(true)
+
+    await expect(requestToken(false)).resolves.toMatchObject({ accessToken: expect.any(String) })
+    await expect(requestToken(true)).rejects.toThrow('Error verifying client attestation')
+  })
+})

@@ -1,0 +1,122 @@
+import { CacheModule } from '../../modules/cache'
+import { DcqlModule } from '../../modules/dcql'
+import { DidsModule } from '../../modules/dids'
+import { DifPresentationExchangeModule } from '../../modules/dif-presentation-exchange'
+import { GenericRecordsModule } from '../../modules/generic-records'
+import { KeyManagementModule } from '../../modules/kms'
+import { MdocModule } from '../../modules/mdoc'
+import { SdJwtVcModule } from '../../modules/sd-jwt-vc'
+import { TokenStatusListModule } from '../../modules/token-status-list/TokenStatusListModule'
+import { W3cCredentialsModule, W3cV2CredentialsModule } from '../../modules/vc'
+import { W3cDataIntegrityModule } from '../../modules/w3c-di'
+import { X509Module } from '../../modules/x509'
+import type { Module } from '../../plugins'
+import { DependencyManager, injectable } from '../../plugins'
+import { extendModulesWithDefaultModules, getAgentApi } from '../AgentModules'
+
+@injectable()
+class MyApi {}
+
+class MyModuleWithApi implements Module {
+  public api = MyApi
+  public register() {
+    // nothing to register
+  }
+}
+
+class MyModuleWithoutApi implements Module {
+  public register() {
+    // nothing to register
+  }
+}
+
+describe('AgentModules', () => {
+  describe('getAgentApi', () => {
+    test('returns object with all api instances for modules with public api in dependency manager', () => {
+      const dependencyManager = new DependencyManager()
+
+      dependencyManager.registerModules({
+        withApi: new MyModuleWithApi(),
+        withoutApi: new MyModuleWithoutApi(),
+      })
+
+      const api = getAgentApi(dependencyManager)
+
+      expect(api).toEqual({
+        withApi: expect.any(MyApi),
+      })
+    })
+  })
+
+  describe('extendModulesWithDefaultModules', () => {
+    test('returns default modules if no modules were provided', () => {
+      const extendedModules = extendModulesWithDefaultModules()
+
+      expect(extendedModules).toEqual({
+        dcql: expect.any(DcqlModule),
+        pex: expect.any(DifPresentationExchangeModule),
+        genericRecords: expect.any(GenericRecordsModule),
+        dids: expect.any(DidsModule),
+        kms: expect.any(KeyManagementModule),
+        w3cCredentials: expect.any(W3cCredentialsModule),
+        w3cV2Credentials: expect.any(W3cV2CredentialsModule),
+        w3cDataIntegrity: expect.any(W3cDataIntegrityModule),
+        sdJwtVc: expect.any(SdJwtVcModule),
+        mdoc: expect.any(MdocModule),
+        x509: expect.any(X509Module),
+        cache: expect.any(CacheModule),
+        tokenStatusList: expect.any(TokenStatusListModule),
+      })
+    })
+
+    test('returns custom and default modules if custom modules are provided', () => {
+      const myModule = new MyModuleWithApi()
+      const extendedModules = extendModulesWithDefaultModules({
+        myModule,
+      })
+
+      expect(extendedModules).toEqual({
+        dcql: expect.any(DcqlModule),
+        pex: expect.any(DifPresentationExchangeModule),
+        genericRecords: expect.any(GenericRecordsModule),
+        dids: expect.any(DidsModule),
+        kms: expect.any(KeyManagementModule),
+        w3cCredentials: expect.any(W3cCredentialsModule),
+        w3cV2Credentials: expect.any(W3cV2CredentialsModule),
+        w3cDataIntegrity: expect.any(W3cDataIntegrityModule),
+        cache: expect.any(CacheModule),
+        sdJwtVc: expect.any(SdJwtVcModule),
+        mdoc: expect.any(MdocModule),
+        x509: expect.any(X509Module),
+        tokenStatusList: expect.any(TokenStatusListModule),
+        myModule,
+      })
+    })
+
+    test('does not override default module if provided as custom module', () => {
+      const myModule = new MyModuleWithApi()
+      const genericRecords = new GenericRecordsModule()
+      const extendedModules = extendModulesWithDefaultModules({
+        myModule,
+        genericRecords,
+      })
+
+      expect(extendedModules).toEqual({
+        genericRecords: genericRecords,
+        pex: expect.any(DifPresentationExchangeModule),
+        dcql: expect.any(DcqlModule),
+        dids: expect.any(DidsModule),
+        kms: expect.any(KeyManagementModule),
+        w3cCredentials: expect.any(W3cCredentialsModule),
+        w3cV2Credentials: expect.any(W3cV2CredentialsModule),
+        w3cDataIntegrity: expect.any(W3cDataIntegrityModule),
+        cache: expect.any(CacheModule),
+        sdJwtVc: expect.any(SdJwtVcModule),
+        mdoc: expect.any(MdocModule),
+        x509: expect.any(X509Module),
+        tokenStatusList: expect.any(TokenStatusListModule),
+        myModule,
+      })
+    })
+  })
+})

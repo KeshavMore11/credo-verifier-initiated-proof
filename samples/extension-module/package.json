@@ -1,0 +1,28 @@
+{
+  "name": "credo-extension-module-sample",
+  "version": "1.0.0",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openwallet-foundation/credo-ts",
+    "directory": "samples/extension-module/"
+  },
+  "license": "Apache-2.0",
+  "scripts": {
+    "requester": "vite-node requester.ts",
+    "responder": "vite-node responder.ts"
+  },
+  "devDependencies": {
+    "@types/express": "catalog:",
+    "@types/ws": "catalog:"
+  },
+  "dependencies": {
+    "@credo-ts/core": "workspace:*",
+    "@credo-ts/didcomm": "workspace:*",
+    "@credo-ts/node": "workspace:*",
+    "@credo-ts/askar": "workspace:*",
+    "class-validator": "catalog:",
+    "rxjs": "catalog:",
+    "@openwallet-foundation/askar-nodejs": "catalog:"
+  }
+}

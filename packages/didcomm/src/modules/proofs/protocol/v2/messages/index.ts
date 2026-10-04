@@ -1,0 +1,5 @@
+export * from './DidCommPresentationV2AckMessage'
+export * from './DidCommPresentationV2Message'
+export * from './DidCommPresentationV2ProblemReportMessage'
+export * from './DidCommProposePresentationV2Message'
+export * from './DidCommRequestPresentationV2Message'

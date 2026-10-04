@@ -1,0 +1,7 @@
+export * from './AnonCredsRegistry'
+export * from './AnonCredsRegistryService'
+export type { AnonCredsResolutionMetadata } from './base'
+export * from './CredentialDefinitionOptions'
+export * from './RevocationRegistryDefinitionOptions'
+export * from './RevocationStatusListOptions'
+export * from './SchemaOptions'

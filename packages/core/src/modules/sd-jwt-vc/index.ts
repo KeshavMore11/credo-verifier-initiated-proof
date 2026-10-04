@@ -1,0 +1,8 @@
+export type { ClaimPath } from './disclosureFrame'
+export * from './repository'
+export * from './SdJwtVcApi'
+export * from './SdJwtVcError'
+export * from './SdJwtVcModule'
+export * from './SdJwtVcOptions'
+export * from './SdJwtVcService'
+export * from './typeMetadata'

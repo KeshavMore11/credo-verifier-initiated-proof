@@ -1,0 +1,197 @@
+import type { JwsDetachedFormat, JwsFlattenedDetachedFormat, JwsGeneralFormat } from '@credo-ts/core'
+
+import { CredoError, JsonEncoder, type JsonValue, TypedArrayEncoder, utils } from '@credo-ts/core'
+import { Expose, Type } from 'class-transformer'
+import { IsDate, IsHash, IsInstance, IsInt, IsMimeType, IsOptional, IsString, ValidateNested } from 'class-validator'
+
+export interface DidCommAttachmentOptions {
+  id?: string
+  description?: string
+  filename?: string
+  mimeType?: string
+  lastmodTime?: Date
+  byteCount?: number
+  data: DidCommAttachmentDataOptions
+}
+
+export interface DidCommAttachmentDataOptions {
+  base64?: string
+  json?: JsonValue
+  links?: string[]
+  jws?: JwsDetachedFormat | JwsFlattenedDetachedFormat
+  sha256?: string
+}
+
+/**
+ * A JSON object that gives access to the actual content of the attachment
+ */
+export class DidCommAttachmentData {
+  /**
+   * Base64-encoded data, when representing arbitrary content inline instead of via links. Optional.
+   */
+  @IsOptional()
+  @IsString()
+  public base64?: string
+
+  /**
+   *  Directly embedded JSON data, when representing content inline instead of via links, and when the content is natively conveyable as JSON. Optional.
+   */
+  @IsOptional()
+  public json?: JsonValue
+
+  /**
+   * A list of zero or more locations at which the content may be fetched. Optional.
+   */
+  @IsOptional()
+  @IsString({ each: true })
+  public links?: string[]
+
+  /**
+   * A JSON Web Signature over the content of the attachment. Optional.
+   */
+  @IsOptional()
+  // Signed attachments use JWS detached format
+  public jws?: JwsDetachedFormat | JwsFlattenedDetachedFormat
+
+  /**
+   * The hash of the content. Optional.
+   */
+  @IsOptional()
+  @IsHash('sha256')
+  public sha256?: string
+
+  public constructor(options: DidCommAttachmentDataOptions) {
+    if (options) {
+      this.base64 = options.base64
+      this.json = options.json
+      this.links = options.links
+      this.jws = options.jws
+      this.sha256 = options.sha256
+    }
+  }
+}
+
+/**
+ * Represents DIDComm attachment
+ * https://github.com/hyperledger/aries-rfcs/blob/master/concepts/0017-attachments/README.md
+ */
+export class DidCommAttachment {
+  public constructor(options: DidCommAttachmentOptions) {
+    if (options) {
+      this.id = options.id ?? utils.uuid()
+      this.description = options.description
+      this.filename = options.filename
+      this.mimeType = options.mimeType
+      this.lastmodTime = options.lastmodTime
+      this.byteCount = options.byteCount
+      this.data = new DidCommAttachmentData(options.data)
+    }
+  }
+
+  @Expose({ name: '@id' })
+  public id!: string
+
+  /**
+   * An optional human-readable description of the content.
+   */
+  @IsOptional()
+  @IsString()
+  public description?: string
+
+  /**
+   * A hint about the name that might be used if this attachment is persisted as a file. It is not required, and need not be unique. If this field is present and mime-type is not, the extension on the filename may be used to infer a MIME type.
+   */
+  @IsOptional()
+  @IsString()
+  public filename?: string
+
+  /**
+   * Describes the MIME type of the attached content. Optional but recommended.
+   */
+  @Expose({ name: 'mime-type' })
+  @IsOptional()
+  @IsMimeType()
+  public mimeType?: string
+
+  /**
+   * A hint about when the content in this attachment was last modified.
+   */
+  @Expose({ name: 'lastmod_time' })
+  @Type(() => Date)
+  @IsOptional()
+  @IsDate()
+  public lastmodTime?: Date
+
+  /**
+   * Optional, and mostly relevant when content is included by reference instead of by value. Lets the receiver guess how expensive it will be, in time, bandwidth, and storage, to fully fetch the attachment.
+   */
+  @Expose({ name: 'byte_count' })
+  @IsOptional()
+  @IsInt()
+  public byteCount?: number
+
+  @Type(() => DidCommAttachmentData)
+  @ValidateNested()
+  @IsInstance(DidCommAttachmentData)
+  public data!: DidCommAttachmentData
+
+  /*
+   * Helper function returning the raw bytes of a base64 attachment payload.
+   *
+   * The DIDComm/Aries RFC 0017 spec mandates base64url for `data.base64`, so we try
+   * decoding it as base64url first. Credo itself (and other implementations) has
+   * historically emitted standard base64 with `+`/`/` and `=` padding, so we fall
+   * back to that to preserve interop with older agents.
+   */
+  public getDataAsUint8Array(): Uint8Array {
+    if (typeof this.data.base64 !== 'string') {
+      throw new CredoError('No base64 attachment data found.')
+    }
+    try {
+      // `fromBase64Url` expects the no-padding variant, strip trailing `=` so
+      // both padded and unpadded base64url inputs are accepted.
+      return TypedArrayEncoder.fromBase64Url(this.data.base64.replace(/=+$/, ''))
+    } catch (base64UrlError) {
+      try {
+        return TypedArrayEncoder.fromBase64(this.data.base64)
+      } catch {
+        throw new CredoError('Could not decode attachment data as base64url or base64 string.', {
+          cause: base64UrlError,
+        })
+      }
+    }
+  }
+
+  /*
+   * Helper function returning JSON representation of attachment data (if present). Tries to obtain the data from .base64 or .json, throws an error otherwise
+   */
+  public getDataAsJson<T>(): T {
+    if (typeof this.data.base64 === 'string') {
+      return JsonEncoder.fromUint8Array(this.getDataAsUint8Array()) as T
+    }
+    if (this.data.json) {
+      return this.data.json as T
+    }
+    throw new CredoError('No attachment data found in `json` or `base64` data fields.')
+  }
+
+  public addJws(jws: JwsDetachedFormat) {
+    // Remove payload if user provided a non-detached JWS
+    const { payload, ...detachedJws } = jws as JwsGeneralFormat
+
+    // If no JWS yet, assign to current JWS
+    if (!this.data.jws) {
+      this.data.jws = detachedJws
+    }
+    // Is already jws array, add to it
+    else if ('signatures' in this.data.jws) {
+      this.data.jws.signatures.push(detachedJws)
+    }
+    // If already single JWS, transform to general jws format
+    else {
+      this.data.jws = {
+        signatures: [this.data.jws, detachedJws],
+      }
+    }
+  }
+}
